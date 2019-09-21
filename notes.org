@@ -1,0 +1,11 @@
+#+TITLE:NESSharp System Design : Notes
+
+Reference Material/Sites:
+
+    General Overview:    https://wiki.nesdev.com
+    Datasheet:           http://archive.6502.org/datasheets/rockwell_r650x_r651x.pdf
+    OpCode descriptions: https://www.masswerk.at/6502/6502_instruction_set.html
+
+* NES Hardware
+
+* Software

@@ -2,10 +2,16 @@
 
 namespace NESSharp.Input
 {
+    /// <summary>
+    /// Utility function for handling input.
+    /// </summary>
     public class InputUtil
     {
 
-        #region Properties
+        #region Variables
+        /// <summary>
+        /// bool array of key states for ascii table
+        /// </summary>
         public bool[] inputBuffer { get; private set; }
         #endregion
 
@@ -17,9 +23,12 @@ namespace NESSharp.Input
         #endregion
 
         #region Methods
-        public bool IsKeyPressed(int pKeyCode)
+        public bool IsKeyPressed(byte asciiCode)
         {
-            return inputBuffer[pKeyCode];
+            if(asciiCode >= 0 && asciiCode <= 255)
+                return inputBuffer[asciiCode];
+
+            return false;
         }
 
         public void OnKeyDown(object sender, KeyEventArgs e)

@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-namespace NESSharp.Graphics
+namespace NESSharpWinForm
 {   
     /// <summary>
     /// A wrapper for the System.Drawing.Bitmap to allow us to directly access the underlying bitmap array.
@@ -12,7 +12,7 @@ namespace NESSharp.Graphics
     {
         #region Variables
         public Bitmap Bitmap { get; private set; }
-        public Int32[] Bits { get; private set; }
+        public int[] Bits { get; private set; }
         public bool Disposed { get; private set; }
         public int Height { get; private set; }
         public int Width { get; private set; }
@@ -43,6 +43,7 @@ namespace NESSharp.Graphics
             int col = color.ToArgb();
 
             Bits[index] = col;
+
         }
 
         public Color GetPixel(int x, int y)

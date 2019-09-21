@@ -2,6 +2,9 @@
 
 namespace NESSharp.Time
 {
+    /// <summary>
+    /// A utility class for handling time.
+    /// </summary>
     public class TimeUtil
     {
         #region Variables
@@ -30,7 +33,7 @@ namespace NESSharp.Time
         #region Methods
         public double GetDelta()
         {
-            long time = Environment.TickCount;
+            long time = Environment.TickCount; // ms resolution
             double lDelta = ((time - LastFrame) / 1.0);
             LastFrame = time;
 

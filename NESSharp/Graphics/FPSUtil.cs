@@ -3,9 +3,9 @@
 namespace NESSharp.Graphics
 {
     /// <summary>
-    /// Updates each frame and measures the FPS
+    /// Updates per frame and measures the FPS
     /// </summary>
-    class FPSUtil
+    public class FPSUtil
     {
         #region Variables
         private int deltaFrameCount;
