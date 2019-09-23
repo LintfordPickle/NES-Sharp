@@ -50,10 +50,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Graphics\FPSUtil.cs" />
-    <Compile Include="Hardware\Bus.cs" />
+    <Compile Include="Hardware\NESCore.cs" />
+    <Compile Include="Hardware\Cartridge.cs" />
     <Compile Include="Hardware\CPU6502.cs" />
+    <Compile Include="Hardware\Mapper.cs" />
+    <Compile Include="Hardware\Mappers\Mapper_000.cs" />
+    <Compile Include="Hardware\PPU2C02.cs" />
     <Compile Include="Input\InputUtil.cs" />
-    <Compile Include="NESCore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Time\TimeUtil.cs" />
     <EmbeddedResource Include="Properties\Resources.resx">

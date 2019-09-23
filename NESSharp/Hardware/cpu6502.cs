@@ -7,11 +7,15 @@ using System.Threading.Tasks;
 
 namespace NESSharp.Hardware
 {
-    // Reference material:
-    // General Overview:    https://wiki.nesdev.com
-    // Datasheet:           http://archive.6502.org/datasheets/rockwell_r650x_r651x.pdf
-    // OpCode descriptions: https://www.masswerk.at/6502/6502_instruction_set.html
-
+    /// <summary>
+    /// The NES CPU (MOS 6502 variant with audio capabilities).
+    /// </summary>
+    /// <remarks>
+    /// Reference material:
+    /// General Overview:    https://wiki.nesdev.com
+    /// Datasheet:           http://archive.6502.org/datasheets/rockwell_r650x_r651x.pdf
+    /// OpCode descriptions: https://www.masswerk.at/6502/6502_instruction_set.html
+    /// </remarks>
     public class CPU6502
     {
         #region Constants, Strcuts and Enums
@@ -32,7 +36,7 @@ namespace NESSharp.Hardware
             public string name { get; private set; }         // mnemonic for disassembler
             public Func<byte> operate { get; private set; }  // pointer to opcode function (see above)
             public Func<byte> addrmode { get; private set; } // pointer to addrmode function (see above)
-            public int cycles { get; private set; }          // number of cycles needed to complete
+            public int cycles { get; private set; }          // number of cycles needed to complete the instruction
 
             public Instruction(string name, Func<byte> opcodeFunction, Func<byte> addrmode, int cycles) : this()
             {
@@ -44,17 +48,14 @@ namespace NESSharp.Hardware
         }
         #endregion
 
-        #region Variables
-        private Bus bus;
+        #region Fields
+        private NESCore _bus;
 
         /// <summary>
         /// The lookup table contains information about each of the Instructions on the 6502.
         /// The list can be indexed by the OpCode hex value
         /// </summary>
-        private List<Instruction> lookup;
-
-        public SortedList Disassembly { get; private set; }
-        public bool DisassemblyLoaded { get; private set; }
+        private List<Instruction> _instructionLookupTable;
 
         public byte status { get; private set; }   // Status register
         public byte a { get; private set; }        // Accumalator
@@ -65,10 +66,18 @@ namespace NESSharp.Hardware
         public byte opcode { get; private set; }  // Current opcode
 
         // depending on the addressing mode, we'll need to read from different locations in memory.
-        private ushort addr_abs = 0x0000;
-        private ushort addr_rel = 0x0000;
-        private byte fetched = 0x00;  // working input value to ALU
-        private int cycles;
+        private ushort _addrAbs = 0x0000;
+        private ushort _addrRel = 0x0000;
+
+        /// <summary>
+        /// Stores the last fetched data from the current instruction (the operand)
+        /// </summary>
+        private byte _fetchedData = 0x00;
+        /// <summary>
+        /// Stores the number of cycles remaining to execute the current instruction.
+        /// When _cyclesRemaining reaches zero, we should load the next instruction.
+        /// </summary>
+        private int _cyclesRemaining;
         #endregion
 
         #region Address Mode Functions
@@ -78,9 +87,9 @@ namespace NESSharp.Hardware
         /// of the accumulator.
         /// </summary>
         /// <returns>Number of additional cycles needed, if any</returns>
-        byte ACC()
+        public byte ACC()
         {
-            fetched = a;
+            _fetchedData = a;
             return 0x00;
         }
 
@@ -92,7 +101,7 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte IMP()
         {
-            fetched = a;
+            _fetchedData = a;
             return 0x00;
         }
 
@@ -104,7 +113,7 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte IMM()
         {
-            addr_abs = pc;
+            _addrAbs = pc;
             pc++;
             return 0x00;
         }
@@ -118,9 +127,9 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte ZP0()
         {
-            addr_abs = Read(pc);
+            _addrAbs = Read(pc);
             pc++;
-            addr_abs &= 0x00FF;
+            _addrAbs &= 0x00FF;
             return 0x00;
         }
 
@@ -137,9 +146,9 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte ZPX()
         {
-            addr_abs = (ushort)(Read(pc) + x);
+            _addrAbs = (ushort)(Read(pc) + x);
             pc++;
-            addr_abs &= 0x00FF;
+            _addrAbs &= 0x00FF;
 
             return 0x00;
         }
@@ -157,9 +166,9 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte ZPY()
         {
-            addr_abs = (ushort)(Read(pc) + y);
+            _addrAbs = (ushort)(Read(pc) + y);
             pc++;
-            addr_abs &= 0x00FF;
+            _addrAbs &= 0x00FF;
 
             return 0x00;
         }
@@ -179,7 +188,7 @@ namespace NESSharp.Hardware
             byte hiByte = Read(pc);
             pc++;
 
-            addr_abs = (ushort)((hiByte << 8) | loByte);
+            _addrAbs = (ushort)((hiByte << 8) | loByte);
 
             return 0x00;
         }
@@ -201,12 +210,12 @@ namespace NESSharp.Hardware
             byte hiByte = Read(pc);
             pc++;
 
-            addr_abs = (ushort)((hiByte << 8) | loByte);
-            addr_abs += x;
+            _addrAbs = (ushort)((hiByte << 8) | loByte);
+            _addrAbs += x;
 
             // If after offseting with the X register, if the address has changed to a different page,
             // (stored in the high byte), then we need to indicate an increase in cycles needed.
-            if ((addr_abs & 0x00FF) != (hiByte << 8))
+            if ((_addrAbs & 0x00FF) != (hiByte << 8))
                 return 0x01;
             else
                 return 0x00;
@@ -229,12 +238,12 @@ namespace NESSharp.Hardware
             byte hiByte = Read(pc);
             pc++;
 
-            addr_abs = (ushort)((hiByte << 8) | loByte);
-            addr_abs += y;
+            _addrAbs = (ushort)((hiByte << 8) | loByte);
+            _addrAbs += y;
 
             // If after offseting with the Y register, if the address has changed to a different page,
             // (stored in the high byte), then we need to indicate an increase in cycles needed.
-            if ((addr_abs & 0x00FF) != (hiByte << 8))
+            if ((_addrAbs & 0x00FF) != (hiByte << 8))
                 return 0x01;
             else
                 return 0x00;
@@ -252,12 +261,12 @@ namespace NESSharp.Hardware
         /// <returns>Number of additional cycles needed, if any</returns>
         byte REL()
         {
-            addr_rel = Read(pc);
+            _addrRel = Read(pc);
             pc++;
 
             // Branching instructions cannot jump further than 127 memory locations. - maintain the sign
-            if ((addr_rel & 0x80) == 0x80)
-                addr_rel |= 0xFF00;
+            if ((_addrRel & 0x80) == 0x80)
+                _addrRel |= 0xFF00;
 
             return 0x00;
         }
@@ -283,11 +292,11 @@ namespace NESSharp.Hardware
 
             if (ptrLoByte == 0x00FF) // Simulate page boundary hardware bug
             {
-                addr_abs = (ushort)((Read((ushort)(ptrToMemoryAddr + 0xFF00)) << 8) | Read(ptrToMemoryAddr));
+                _addrAbs = (ushort)((Read((ushort)(ptrToMemoryAddr + 0xFF00)) << 8) | Read(ptrToMemoryAddr));
             }
             else
             {
-                addr_abs = (ushort)((Read((ushort)(ptrToMemoryAddr + 1)) << 8) | Read(ptrToMemoryAddr));
+                _addrAbs = (ushort)((Read((ushort)(ptrToMemoryAddr + 1)) << 8) | Read(ptrToMemoryAddr));
             }
 
 
@@ -312,7 +321,7 @@ namespace NESSharp.Hardware
             byte ptrLoByte = Read((ushort)((ushort)(t + x) & 0x00FF));
             byte ptrHiByte = Read((ushort)((ushort)(t + x + 1) & 0x00FF));
             
-            addr_abs = (ushort)((ptrHiByte << 8) | ptrLoByte);
+            _addrAbs = (ushort)((ptrHiByte << 8) | ptrLoByte);
 
             return 0x00;
         }
@@ -325,7 +334,7 @@ namespace NESSharp.Hardware
         /// page zero memory location to form the high order byte of the effective address.
         /// </summary>
         /// <returns>Number of additional cycles needed, if any</returns>
-        byte IZY()
+        public byte IZY()
         {
             ushort t = Read(pc);
             pc++;
@@ -333,11 +342,11 @@ namespace NESSharp.Hardware
             byte ptrLoByte = Read((ushort)((t + 0) & 0x00FF));
             byte ptrHiByte = Read((ushort)((t + 1) & 0x00FF));
 
-            addr_abs = (ushort)((ptrHiByte << 8) | ptrLoByte);
-            addr_abs += y;
+            _addrAbs = (ushort)((ptrHiByte << 8) | ptrLoByte);
+            _addrAbs += y;
 
             // If we cross a page boundary, we need to process an extra cycle
-            if ((addr_abs & 0xFF00) != (ptrHiByte << 8))
+            if ((_addrAbs & 0xFF00) != (ptrHiByte << 8))
                 return 0x01;
             else 
                 return 0x00;
@@ -356,13 +365,13 @@ namespace NESSharp.Hardware
             fetch();
 
             // perform addition in 16-bit domain
-            ushort temp = (ushort)((ushort)a + (ushort)fetched + (ushort)((GetFlag(FLAGS6502.C) ? 1 : 0)));
+            ushort temp = (ushort)((ushort)a + (ushort)_fetchedData + (ushort)((GetFlag(FLAGS6502.C) ? 1 : 0)));
 
             SetFlag(FLAGS6502.C,  temp > 255);           // Set carry flag
             SetFlag(FLAGS6502.Z, (temp & 0x00FF) == 0);  // Set zero flag
             SetFlag(FLAGS6502.N, (temp & 0x80) == 0x80); // Set the overflow flag
 
-            SetFlag(FLAGS6502.V, ((~(a ^ fetched) & (a ^ temp)) & 0x0080) == 0x0080);
+            SetFlag(FLAGS6502.V, ((~(a ^ _fetchedData) & (a ^ temp)) & 0x0080) == 0x0080);
 
             /**
              * Truth table for working out whether to set the oVerflow flag
@@ -395,7 +404,7 @@ namespace NESSharp.Hardware
         byte AND()
         {
             fetch();
-            a = (byte)(a & fetched);
+            a = (byte)(a & _fetchedData);
 
             // Update the status register
             SetFlag(FLAGS6502.Z, a == 0x00); // zero
@@ -415,16 +424,16 @@ namespace NESSharp.Hardware
             fetch();
 
             // 16-bit domain
-            ushort temp = (byte)(fetched << 1);
+            ushort temp = (byte)(_fetchedData << 1);
 
             SetFlag(FLAGS6502.C, (ushort)(temp & 0xFF00) > 0);  // carry
             SetFlag(FLAGS6502.Z, (ushort)(temp & 0x00FF) == 0); // zero
             SetFlag(FLAGS6502.N, temp == 0x80); // neg
 
-            if (lookup[opcode].addrmode == IMP)
+            if (_instructionLookupTable[opcode].addrmode == IMP)
                 a = (byte)(temp & 0x00FF);
             else
-                Write(addr_abs, (byte)(temp & 0x00FF));
+                Write(_addrAbs, (byte)(temp & 0x00FF));
 
             return 0x00;
         }
@@ -441,14 +450,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -467,14 +476,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -493,14 +502,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -519,10 +528,10 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            byte temp = (byte)(a & fetched);
+            byte temp = (byte)(a & _fetchedData);
 
-            SetFlag(FLAGS6502.N, (byte)(fetched & 0xFF) == 0x40);
-            SetFlag(FLAGS6502.V, (byte)(fetched & 0xFF) == 0x20);
+            SetFlag(FLAGS6502.N, (byte)(_fetchedData & 0xFF) == 0x40);
+            SetFlag(FLAGS6502.V, (byte)(_fetchedData & 0xFF) == 0x20);
 
             SetFlag(FLAGS6502.Z, temp == 0x00);
 
@@ -541,14 +550,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -568,14 +577,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -595,14 +604,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -649,14 +658,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -676,14 +685,14 @@ namespace NESSharp.Hardware
                 // Add 1 additional cycle if branch occurs to the same page
                 // Add 2 additional cycle if branch occurs to different page
 
-                cycles++;
-                addr_abs = (ushort)(pc + addr_rel);
+                _cyclesRemaining++;
+                _addrAbs = (ushort)(pc + _addrRel);
 
                 // if we crossed a page boundary, then increase the cycle count
-                if ((addr_abs & 0xFF00) != (pc & 0xFF00))
-                    cycles++;
+                if ((_addrAbs & 0xFF00) != (pc & 0xFF00))
+                    _cyclesRemaining++;
 
-                pc = addr_abs;
+                pc = _addrAbs;
 
             }
 
@@ -743,11 +752,11 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort temp = (ushort)(a - fetched);
+            ushort temp = (ushort)(a - _fetchedData);
 
             SetFlag(FLAGS6502.N, (ushort)(temp & 0x8000) == 0x8000);
             SetFlag(FLAGS6502.Z, (byte)(temp & 0x00FF) == 0x0000);
-            SetFlag(FLAGS6502.C, a >= fetched);
+            SetFlag(FLAGS6502.C, a >= _fetchedData);
 
             return 0x01;
         }
@@ -761,11 +770,11 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort temp = (ushort)(x - fetched);
+            ushort temp = (ushort)(x - _fetchedData);
 
             SetFlag(FLAGS6502.N, (ushort)(temp & 0x8000) == 0x8000);
             SetFlag(FLAGS6502.Z, (byte)(temp & 0x00FF) == 0x0000);
-            SetFlag(FLAGS6502.C, x >= fetched);
+            SetFlag(FLAGS6502.C, x >= _fetchedData);
 
             return 0x00;
         }
@@ -779,11 +788,11 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort temp = (ushort)(y - fetched);
+            ushort temp = (ushort)(y - _fetchedData);
 
             SetFlag(FLAGS6502.N, (ushort)(temp & 0x8000) == 0x8000);
             SetFlag(FLAGS6502.Z, (byte)(temp & 0x00FF) == 0x0000);
-            SetFlag(FLAGS6502.C, y >= fetched);
+            SetFlag(FLAGS6502.C, y >= _fetchedData);
 
             return 0x00;
         }
@@ -797,12 +806,12 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort temp = fetched--;
+            ushort temp = _fetchedData--;
 
-            SetFlag(FLAGS6502.Z, fetched == 0x00);
-            SetFlag(FLAGS6502.N, (byte)(fetched & 0x80) == 0x80);
+            SetFlag(FLAGS6502.Z, _fetchedData == 0x00);
+            SetFlag(FLAGS6502.N, (byte)(_fetchedData & 0x80) == 0x80);
 
-            Write(addr_abs, (byte)(temp & 0x00FF));
+            Write(_addrAbs, (byte)(temp & 0x00FF));
 
             return 0x00;
         }
@@ -846,7 +855,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            a ^= fetched;
+            a ^= _fetchedData;
 
             SetFlag(FLAGS6502.Z, a == 0x00);
             SetFlag(FLAGS6502.N, (byte)(a & 0x80) == 0x80);
@@ -864,7 +873,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort temp = (ushort)(fetched + 1);
+            ushort temp = (ushort)(_fetchedData + 1);
 
             SetFlag(FLAGS6502.Z, (byte)(temp & 0x00FF) == 0x00);
             SetFlag(FLAGS6502.N, (byte)(temp & 0x0080) == 0x0080);
@@ -910,7 +919,7 @@ namespace NESSharp.Hardware
         /// </summary>
         byte JMP()
         {
-            pc = addr_abs;
+            pc = _addrAbs;
             return 0x00;
         }
 
@@ -928,7 +937,7 @@ namespace NESSharp.Hardware
             Write((ushort)(0x0100 + stkp), (byte)(pc & 0x00FF));
             stkp--;
 
-            pc = addr_abs;
+            pc = _addrAbs;
 
             return 0x00;
         }
@@ -942,7 +951,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            a = fetched;
+            a = _fetchedData;
             SetFlag(FLAGS6502.Z, (a & 0x00) == 0x00);
             SetFlag(FLAGS6502.N, (a & 0x80) == 0x80);
 
@@ -958,7 +967,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            x = fetched;
+            x = _fetchedData;
             SetFlag(FLAGS6502.Z, x == 0x00);
             SetFlag(FLAGS6502.N, (x & 0x80) == 0x80);
 
@@ -974,7 +983,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            y = fetched;
+            y = _fetchedData;
             SetFlag(FLAGS6502.Z, y == 0x00);
             SetFlag(FLAGS6502.N, (y & 0x80) == 0x80);
 
@@ -987,19 +996,19 @@ namespace NESSharp.Hardware
         byte LSR()
         {
             fetch();
-            SetFlag(FLAGS6502.C, (fetched & 0x0001) == 0x0001);
+            SetFlag(FLAGS6502.C, (_fetchedData & 0x0001) == 0x0001);
 
             // Shift right 1 bit
-            byte temp = (byte)(fetched >> 1);
+            byte temp = (byte)(_fetchedData >> 1);
 
-            SetFlag(FLAGS6502.Z, (fetched & 0x00FF) == 0x0000);
-            SetFlag(FLAGS6502.N, (fetched & 0x00FF) == 0x0080);
+            SetFlag(FLAGS6502.Z, (_fetchedData & 0x00FF) == 0x0000);
+            SetFlag(FLAGS6502.N, (_fetchedData & 0x00FF) == 0x0080);
 
             // if memory or acc can be determined based on the address mode
-            if (lookup[opcode].addrmode == IMP)
+            if (_instructionLookupTable[opcode].addrmode == IMP)
                 a = (byte)(temp & 0x00FF);
             else
-                Write(addr_abs, (byte)(temp & 0x00FF));
+                Write(_addrAbs, (byte)(temp & 0x00FF));
 
             return 0x00;
         }
@@ -1019,7 +1028,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            a |= fetched;
+            a |= _fetchedData;
 
             SetFlag(FLAGS6502.N, (byte)(a & 0x80) == 0x80);
             SetFlag(FLAGS6502.Z, a == 0x00);
@@ -1098,15 +1107,15 @@ namespace NESSharp.Hardware
             fetch();
 
             byte c = (byte)(GetFlag(FLAGS6502.C) ? 0x01 : 0x00);
-            ushort temp = (ushort)((fetched << 1) | c);
+            ushort temp = (ushort)((_fetchedData << 1) | c);
 
             SetFlag(FLAGS6502.C, (temp & 0xFF00) > 0);
             SetFlag(FLAGS6502.Z, (temp & 0x00FF) == 0x0000);
             SetFlag(FLAGS6502.N, (temp & 0x0080) == 0x0080);
-            if (lookup[opcode].addrmode == IMP)
+            if (_instructionLookupTable[opcode].addrmode == IMP)
                 a = (byte)(temp & 0x00FF);
             else
-                Write(addr_abs, (byte)(temp & 0x00FF));
+                Write(_addrAbs, (byte)(temp & 0x00FF));
 
             return 0x00;
         }
@@ -1121,15 +1130,15 @@ namespace NESSharp.Hardware
             fetch();
 
             byte c = (byte)(GetFlag(FLAGS6502.C) ? 0x01 : 0x00);
-            ushort temp = (ushort)((c << 7) | (fetched >> 1));
+            ushort temp = (ushort)((c << 7) | (_fetchedData >> 1));
 
             SetFlag(FLAGS6502.C, (temp & 0xFF00) > 0);
             SetFlag(FLAGS6502.Z, (temp & 0x00FF) == 0x0000);
             SetFlag(FLAGS6502.N, (temp & 0x0080) == 0x0080);
-            if (lookup[opcode].addrmode == IMP)
+            if (_instructionLookupTable[opcode].addrmode == IMP)
                 a = (byte)(temp & 0x00FF);
             else
-                Write(addr_abs, (byte)(temp & 0x00FF));
+                Write(_addrAbs, (byte)(temp & 0x00FF));
 
             return 0x00;
         }
@@ -1183,7 +1192,7 @@ namespace NESSharp.Hardware
         {
             fetch();
 
-            ushort value = (ushort)((fetched) ^ 0x00FF);
+            ushort value = (ushort)((_fetchedData) ^ 0x00FF);
 
             // perform addition in 16-bit domain
             ushort temp = (ushort)(a + value + (GetFlag(FLAGS6502.C) ? 1 : 0));
@@ -1191,7 +1200,7 @@ namespace NESSharp.Hardware
             SetFlag(FLAGS6502.C, temp > 255);            // Set carry flag
             SetFlag(FLAGS6502.Z, (temp & 0x00FF) == 0);  // Set zero flag
             SetFlag(FLAGS6502.N, (temp & 0x80) == 0x80); // Set the overflow flag
-            SetFlag(FLAGS6502.V, ((~(a ^ fetched) & (a ^ temp)) & 0x0080) == 0x0080);
+            SetFlag(FLAGS6502.V, ((~(a ^ _fetchedData) & (a ^ temp)) & 0x0080) == 0x0080);
 
             /**
              * Truth table for working out whether to set the oVerflow flag
@@ -1256,7 +1265,7 @@ namespace NESSharp.Hardware
         /// </summary>
         byte STA()
         {
-            Write(addr_abs, a);
+            Write(_addrAbs, a);
             return 0x00;
         }
 
@@ -1267,7 +1276,7 @@ namespace NESSharp.Hardware
         /// </summary>
         byte STX()
         {
-            Write(addr_abs, x);
+            Write(_addrAbs, x);
             return 0x00;
         }
 
@@ -1278,7 +1287,7 @@ namespace NESSharp.Hardware
         /// </summary>
         byte STY()
         {
-            Write(addr_abs, y);
+            Write(_addrAbs, y);
             return 0x00;
         }
 
@@ -1382,19 +1391,19 @@ namespace NESSharp.Hardware
         #endregion
 
         #region Methods
-        public void ConnectBus(Bus n)
+        public void ConnectBus(NESCore n)
         {
-            bus = n;
+            _bus = n;
         }
 
         public void Write(ushort addr, byte data)
         {
-            bus.Write(addr, data);
+            _bus.CPUWrite(addr, data);
         }
 
         public byte Read(ushort addr)
         {
-            return bus.Read(addr, false);
+            return _bus.CPURead(addr, false);
         }
 
         // The following signals can occur at any time and need to behave asynchronously.
@@ -1416,18 +1425,18 @@ namespace NESSharp.Hardware
             status = (byte)(0x00 | FLAGS6502.U);
 
             // Set the PC to the address in the reset vector
-            addr_abs = 0xFFFC;
-            ushort loByte = Read((ushort)(addr_abs + 0)); // 0xFFFC
-            ushort hiByte = Read((ushort)(addr_abs + 1)); // 0xFFFD
+            _addrAbs = 0xFFFC;
+            ushort loByte = Read((ushort)(_addrAbs + 0)); // 0xFFFC
+            ushort hiByte = Read((ushort)(_addrAbs + 1)); // 0xFFFD
 
             pc = (ushort)((hiByte << 8) | loByte);
 
             // (re)Set emulator internal variables
-            addr_rel = 0x0000;
-            addr_abs = 0x0000;
-            fetched = 0x00;
+            _addrRel = 0x0000;
+            _addrAbs = 0x0000;
+            _fetchedData = 0x00;
 
-            cycles = 8;
+            _cyclesRemaining = 8;
 
         }
 
@@ -1452,14 +1461,14 @@ namespace NESSharp.Hardware
                 stkp--;
 
                 // Get the value of the new pc
-                addr_abs = 0xFFFE;
-                ushort loByte = Read((ushort)(addr_abs + 0));
-                ushort hiByte = Read((ushort)(addr_abs + 1));
+                _addrAbs = 0xFFFE;
+                ushort loByte = Read((ushort)(_addrAbs + 0));
+                ushort hiByte = Read((ushort)(_addrAbs + 1));
 
                 pc = (ushort)((hiByte << 8) | loByte);
 
                 // interupts take time
-                cycles = 7;
+                _cyclesRemaining = 7;
 
             }
         }
@@ -1483,14 +1492,14 @@ namespace NESSharp.Hardware
             stkp--;
 
             // Get the value of the new pc
-            addr_abs = 0xFFFA;
-            ushort loByte = Read((ushort)(addr_abs + 0)); // 0xFFFA
-            ushort hiByte = Read((ushort)(addr_abs + 1)); // 0xFFFB
+            _addrAbs = 0xFFFA;
+            ushort loByte = Read((ushort)(_addrAbs + 0)); // 0xFFFA
+            ushort hiByte = Read((ushort)(_addrAbs + 1)); // 0xFFFB
 
             pc = (ushort)((hiByte << 8) | loByte);
 
             // interupts take time
-            cycles = 8;
+            _cyclesRemaining = 8;
         }
 
         /// <summary>
@@ -1505,10 +1514,10 @@ namespace NESSharp.Hardware
             // This depends on the OpCode having already set the addr_abs variable.
             // n.b. the addr_rel is only used by the branching opcodes, and so is not used here.
 
-            if (!(lookup[opcode].addrmode == IMP))
-                fetched = Read(addr_abs);
+            if (!(_instructionLookupTable[opcode].addrmode == IMP))
+                _fetchedData = Read(_addrAbs);
 
-            return fetched;
+            return _fetchedData;
         }
 
         /// <summary>
@@ -1526,24 +1535,24 @@ namespace NESSharp.Hardware
             //   3 - addressing mode
             //   4 - byte size
             //   5 - cycles
-            lookup = new List<Instruction>();
+            _instructionLookupTable = new List<Instruction>();
 
-            lookup.Add(new Instruction("BRK", BRK, IMP, 7)); lookup.Add(new Instruction("ORA", ORA, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ORA", ORA, ZP0, 3)); lookup.Add(new Instruction("ASL", ASL, ZP0, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("PHP", PHP, IMP, 3)); lookup.Add(new Instruction("ORA", ORA, IMM, 2)); lookup.Add(new Instruction("ASL", ASL, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ORA", ORA, ABS, 4)); lookup.Add(new Instruction("ASL", ASL, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BPL", BPL, REL, 2)); lookup.Add(new Instruction("ORA", ORA, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ORA", ORA, ZPX, 4)); lookup.Add(new Instruction("ASL", ASL, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CLC", CLC, IMP, 2)); lookup.Add(new Instruction("ORA", ORA, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ORA", ORA, ABX, 4)); lookup.Add(new Instruction("ASL", ASL, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("JSR", JSR, ABS, 6)); lookup.Add(new Instruction("AND", AND, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("BIT", BIT, ZP0, 3)); lookup.Add(new Instruction("AND", AND, ZP0, 3)); lookup.Add(new Instruction("ROL", ROL, ZP0, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("PLP", PLP, IMP, 4)); lookup.Add(new Instruction("AND", AND, IMM, 2)); lookup.Add(new Instruction("ROL", ROL, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("BIT", BIT, ABS, 4)); lookup.Add(new Instruction("AND", AND, ABS, 4)); lookup.Add(new Instruction("ROL", ROL, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BMI", BMI, REL, 2)); lookup.Add(new Instruction("AND", AND, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("AND", AND, ZPX, 4)); lookup.Add(new Instruction("ROL", ROL, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("SEC", SEC, IMP, 2)); lookup.Add(new Instruction("AND", AND, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("AND", AND, ABX, 4)); lookup.Add(new Instruction("ROL", ROL, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("RTI", RTI, IMP, 6)); lookup.Add(new Instruction("EOR", EOR, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("EOR", EOR, ZP0, 3)); lookup.Add(new Instruction("LSR", LSR, ZP0, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("PHA", PHA, IMP, 3)); lookup.Add(new Instruction("EOR", EOR, IMM, 2)); lookup.Add(new Instruction("LSR", LSR, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("JMP", JMP, ABS, 3)); lookup.Add(new Instruction("EOR", EOR, ABS, 4)); lookup.Add(new Instruction("LSR", LSR, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BVC", BVC, REL, 2)); lookup.Add(new Instruction("EOR", EOR, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("EOR", EOR, ZPX, 4)); lookup.Add(new Instruction("LSR", LSR, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CLI", CLI, IMP, 2)); lookup.Add(new Instruction("EOR", EOR, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("EOR", EOR, ABX, 4)); lookup.Add(new Instruction("LSR", LSR, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("RTS", RTS, IMP, 6)); lookup.Add(new Instruction("ADC", ADC, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ADC", ADC, ZP0, 3)); lookup.Add(new Instruction("ROR", ROR, ZP0, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("PLA", PLA, IMP, 4)); lookup.Add(new Instruction("ADC", ADC, IMM, 2)); lookup.Add(new Instruction("ROR", ROR, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("JMP", JMP, IND, 5)); lookup.Add(new Instruction("ADC", ADC, ABS, 4)); lookup.Add(new Instruction("ROR", ROR, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BVS", BVS, REL, 2)); lookup.Add(new Instruction("ADC", ADC, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ADC", ADC, ZPX, 4)); lookup.Add(new Instruction("ROR", ROR, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("SEI", SEI, IMM, 2)); lookup.Add(new Instruction("ADC", ADC, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("ADC", ADC, ABX, 4)); lookup.Add(new Instruction("ROR", ROR, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("???", NOP, IMP, 2)); lookup.Add(new Instruction("STA", STA, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("STY", STY, ZP0, 3)); lookup.Add(new Instruction("STA", STA, ZP0, 3)); lookup.Add(new Instruction("STX", STX, ZP0, 3)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("DEY", DEY, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("TXA", TXA, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("STY", STY, ABS, 4)); lookup.Add(new Instruction("STA", STA, ABS, 4)); lookup.Add(new Instruction("STX", STX, ABS, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BCC", BCC, REL, 2)); lookup.Add(new Instruction("STA", STA, IZY, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("STY", STY, ZPX, 4)); lookup.Add(new Instruction("STA", STA, ZPX, 4)); lookup.Add(new Instruction("STX", STX, ZPY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("TYA", TYA, IMP, 2)); lookup.Add(new Instruction("STA", STA, ABY, 5)); lookup.Add(new Instruction("TXS", TXS, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("STA", STA, ABX, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("LDY", LDY, IMM, 2)); lookup.Add(new Instruction("LDX", LDX, IZX, 6)); lookup.Add(new Instruction("LDX", LDX, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("LDY", LDY, ZP0, 3)); lookup.Add(new Instruction("LDA", LDA, ZP0, 3)); lookup.Add(new Instruction("LDX", LDX, ZP0, 3)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("TAY", TAY, IMP, 2)); lookup.Add(new Instruction("LDA", LDA, IMM, 2)); lookup.Add(new Instruction("TAX", TAX, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("LDY", LDY, ABS, 4)); lookup.Add(new Instruction("LDA", LDA, ABS, 4)); lookup.Add(new Instruction("LDX", LDX, ABS, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BCS", BCS, REL, 2)); lookup.Add(new Instruction("LDA", LDA, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("LDY", LDY, ZPX, 4)); lookup.Add(new Instruction("LDA", LDA, ZPX, 4)); lookup.Add(new Instruction("LDX", LDX, ZPY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CLV", CLV, IMP, 2)); lookup.Add(new Instruction("LDA", LDA, ABY, 4)); lookup.Add(new Instruction("TSX", TSX, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("LDY", LDY, ABX, 4)); lookup.Add(new Instruction("LDA", LDA, ABX, 4)); lookup.Add(new Instruction("LDX", LDX, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("CPY", CPY, IMM, 2)); lookup.Add(new Instruction("CMP", CMP, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CPY", CPY, ZP0, 3)); lookup.Add(new Instruction("CMP", CMP, ZP0, 3)); lookup.Add(new Instruction("DEC", DEC, ZP0, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("INY", INY, IMP, 2)); lookup.Add(new Instruction("CMP", CMP, IMM, 2)); lookup.Add(new Instruction("DEX", DEX, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CPY", CPY, ABS, 4)); lookup.Add(new Instruction("CMP", CMP, ABS, 4)); lookup.Add(new Instruction("DEC", DEC, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BNE", BNE, REL, 2)); lookup.Add(new Instruction("CMP", CMP, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CMP", CMP, ZPX, 4)); lookup.Add(new Instruction("DEC", DEC, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CLD", CLD, IMP, 2)); lookup.Add(new Instruction("CMP", CMP, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CMP", CMP, ABX, 4)); lookup.Add(new Instruction("DEC", DEC, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("CPX", CPX, IMM, 2)); lookup.Add(new Instruction("SBC", SBC, IZX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CPX", CPX, ZP0, 3)); lookup.Add(new Instruction("SBC", SBC, ZP0, 3)); lookup.Add(new Instruction("INC", INC, ZP0, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("INX", INX, IMP, 2)); lookup.Add(new Instruction("SBC", SBC, IMM, 2)); lookup.Add(new Instruction("NOP", NOP, IMP, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("CPX", CPX, ABS, 4)); lookup.Add(new Instruction("SBC", SBC, ABS, 4)); lookup.Add(new Instruction("INC", INC, ABS, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2));
-            lookup.Add(new Instruction("BEQ", BEQ, REL, 2)); lookup.Add(new Instruction("SBC", SBC, IZY, 5)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("SBC", SBC, ZPX, 4)); lookup.Add(new Instruction("INC", INC, ZPX, 6)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("SED", SED, IMP, 2)); lookup.Add(new Instruction("SBC", SBC, ABY, 4)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("???", NOP, IMM, 2)); lookup.Add(new Instruction("SBC", SBC, ABX, 4)); lookup.Add(new Instruction("INC", INC, ABX, 7)); lookup.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BRK", BRK, IMP, 7)); _instructionLookupTable.Add(new Instruction("ORA", ORA, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, ZP0, 3)); _instructionLookupTable.Add(new Instruction("ASL", ASL, ZP0, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("PHP", PHP, IMP, 3)); _instructionLookupTable.Add(new Instruction("ORA", ORA, IMM, 2)); _instructionLookupTable.Add(new Instruction("ASL", ASL, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, ABS, 4)); _instructionLookupTable.Add(new Instruction("ASL", ASL, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BPL", BPL, REL, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, ZPX, 4)); _instructionLookupTable.Add(new Instruction("ASL", ASL, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CLC", CLC, IMP, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ORA", ORA, ABX, 4)); _instructionLookupTable.Add(new Instruction("ASL", ASL, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("JSR", JSR, ABS, 6)); _instructionLookupTable.Add(new Instruction("AND", AND, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("BIT", BIT, ZP0, 3)); _instructionLookupTable.Add(new Instruction("AND", AND, ZP0, 3)); _instructionLookupTable.Add(new Instruction("ROL", ROL, ZP0, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("PLP", PLP, IMP, 4)); _instructionLookupTable.Add(new Instruction("AND", AND, IMM, 2)); _instructionLookupTable.Add(new Instruction("ROL", ROL, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("BIT", BIT, ABS, 4)); _instructionLookupTable.Add(new Instruction("AND", AND, ABS, 4)); _instructionLookupTable.Add(new Instruction("ROL", ROL, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BMI", BMI, REL, 2)); _instructionLookupTable.Add(new Instruction("AND", AND, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("AND", AND, ZPX, 4)); _instructionLookupTable.Add(new Instruction("ROL", ROL, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("SEC", SEC, IMP, 2)); _instructionLookupTable.Add(new Instruction("AND", AND, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("AND", AND, ABX, 4)); _instructionLookupTable.Add(new Instruction("ROL", ROL, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("RTI", RTI, IMP, 6)); _instructionLookupTable.Add(new Instruction("EOR", EOR, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("EOR", EOR, ZP0, 3)); _instructionLookupTable.Add(new Instruction("LSR", LSR, ZP0, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("PHA", PHA, IMP, 3)); _instructionLookupTable.Add(new Instruction("EOR", EOR, IMM, 2)); _instructionLookupTable.Add(new Instruction("LSR", LSR, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("JMP", JMP, ABS, 3)); _instructionLookupTable.Add(new Instruction("EOR", EOR, ABS, 4)); _instructionLookupTable.Add(new Instruction("LSR", LSR, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BVC", BVC, REL, 2)); _instructionLookupTable.Add(new Instruction("EOR", EOR, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("EOR", EOR, ZPX, 4)); _instructionLookupTable.Add(new Instruction("LSR", LSR, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CLI", CLI, IMP, 2)); _instructionLookupTable.Add(new Instruction("EOR", EOR, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("EOR", EOR, ABX, 4)); _instructionLookupTable.Add(new Instruction("LSR", LSR, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("RTS", RTS, IMP, 6)); _instructionLookupTable.Add(new Instruction("ADC", ADC, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ADC", ADC, ZP0, 3)); _instructionLookupTable.Add(new Instruction("ROR", ROR, ZP0, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("PLA", PLA, IMP, 4)); _instructionLookupTable.Add(new Instruction("ADC", ADC, IMM, 2)); _instructionLookupTable.Add(new Instruction("ROR", ROR, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("JMP", JMP, IND, 5)); _instructionLookupTable.Add(new Instruction("ADC", ADC, ABS, 4)); _instructionLookupTable.Add(new Instruction("ROR", ROR, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BVS", BVS, REL, 2)); _instructionLookupTable.Add(new Instruction("ADC", ADC, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ADC", ADC, ZPX, 4)); _instructionLookupTable.Add(new Instruction("ROR", ROR, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("SEI", SEI, IMM, 2)); _instructionLookupTable.Add(new Instruction("ADC", ADC, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("ADC", ADC, ABX, 4)); _instructionLookupTable.Add(new Instruction("ROR", ROR, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("???", NOP, IMP, 2)); _instructionLookupTable.Add(new Instruction("STA", STA, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("STY", STY, ZP0, 3)); _instructionLookupTable.Add(new Instruction("STA", STA, ZP0, 3)); _instructionLookupTable.Add(new Instruction("STX", STX, ZP0, 3)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("DEY", DEY, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("TXA", TXA, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("STY", STY, ABS, 4)); _instructionLookupTable.Add(new Instruction("STA", STA, ABS, 4)); _instructionLookupTable.Add(new Instruction("STX", STX, ABS, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BCC", BCC, REL, 2)); _instructionLookupTable.Add(new Instruction("STA", STA, IZY, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("STY", STY, ZPX, 4)); _instructionLookupTable.Add(new Instruction("STA", STA, ZPX, 4)); _instructionLookupTable.Add(new Instruction("STX", STX, ZPY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("TYA", TYA, IMP, 2)); _instructionLookupTable.Add(new Instruction("STA", STA, ABY, 5)); _instructionLookupTable.Add(new Instruction("TXS", TXS, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("STA", STA, ABX, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("LDY", LDY, IMM, 2)); _instructionLookupTable.Add(new Instruction("LDX", LDX, IZX, 6)); _instructionLookupTable.Add(new Instruction("LDX", LDX, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("LDY", LDY, ZP0, 3)); _instructionLookupTable.Add(new Instruction("LDA", LDA, ZP0, 3)); _instructionLookupTable.Add(new Instruction("LDX", LDX, ZP0, 3)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("TAY", TAY, IMP, 2)); _instructionLookupTable.Add(new Instruction("LDA", LDA, IMM, 2)); _instructionLookupTable.Add(new Instruction("TAX", TAX, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("LDY", LDY, ABS, 4)); _instructionLookupTable.Add(new Instruction("LDA", LDA, ABS, 4)); _instructionLookupTable.Add(new Instruction("LDX", LDX, ABS, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BCS", BCS, REL, 2)); _instructionLookupTable.Add(new Instruction("LDA", LDA, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("LDY", LDY, ZPX, 4)); _instructionLookupTable.Add(new Instruction("LDA", LDA, ZPX, 4)); _instructionLookupTable.Add(new Instruction("LDX", LDX, ZPY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CLV", CLV, IMP, 2)); _instructionLookupTable.Add(new Instruction("LDA", LDA, ABY, 4)); _instructionLookupTable.Add(new Instruction("TSX", TSX, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("LDY", LDY, ABX, 4)); _instructionLookupTable.Add(new Instruction("LDA", LDA, ABX, 4)); _instructionLookupTable.Add(new Instruction("LDX", LDX, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("CPY", CPY, IMM, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CPY", CPY, ZP0, 3)); _instructionLookupTable.Add(new Instruction("CMP", CMP, ZP0, 3)); _instructionLookupTable.Add(new Instruction("DEC", DEC, ZP0, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("INY", INY, IMP, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, IMM, 2)); _instructionLookupTable.Add(new Instruction("DEX", DEX, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CPY", CPY, ABS, 4)); _instructionLookupTable.Add(new Instruction("CMP", CMP, ABS, 4)); _instructionLookupTable.Add(new Instruction("DEC", DEC, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BNE", BNE, REL, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, ZPX, 4)); _instructionLookupTable.Add(new Instruction("DEC", DEC, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CLD", CLD, IMP, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CMP", CMP, ABX, 4)); _instructionLookupTable.Add(new Instruction("DEC", DEC, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("CPX", CPX, IMM, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, IZX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CPX", CPX, ZP0, 3)); _instructionLookupTable.Add(new Instruction("SBC", SBC, ZP0, 3)); _instructionLookupTable.Add(new Instruction("INC", INC, ZP0, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("INX", INX, IMP, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, IMM, 2)); _instructionLookupTable.Add(new Instruction("NOP", NOP, IMP, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("CPX", CPX, ABS, 4)); _instructionLookupTable.Add(new Instruction("SBC", SBC, ABS, 4)); _instructionLookupTable.Add(new Instruction("INC", INC, ABS, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
+            _instructionLookupTable.Add(new Instruction("BEQ", BEQ, REL, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, IZY, 5)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, ZPX, 4)); _instructionLookupTable.Add(new Instruction("INC", INC, ZPX, 6)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("SED", SED, IMP, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, ABY, 4)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2)); _instructionLookupTable.Add(new Instruction("SBC", SBC, ABX, 4)); _instructionLookupTable.Add(new Instruction("INC", INC, ABX, 7)); _instructionLookupTable.Add(new Instruction("???", NOP, IMM, 2));
 
         }
        
@@ -1581,7 +1590,7 @@ namespace NESSharp.Hardware
             do
             {
                 clock();
-            } while (!CycleComplete());
+            } while (!IsCycleComplete());
         }
 
         /// <summary>
@@ -1594,122 +1603,42 @@ namespace NESSharp.Hardware
             // immiedately and wait the remaining time away.
 
             // If we have expended all cycles (from the last opcode), progress the emulation forward
-            if (cycles == 0)
+            if (_cyclesRemaining == 0)
             {
                 opcode = Read(pc); // use this byte to index the opcode LUT
                 pc++;
 
-                Instruction CurrentInstruction = lookup[opcode];
+                Instruction CurrentInstruction = _instructionLookupTable[opcode];
 
                 System.Console.WriteLine($"[{pc - 1}] : {CurrentInstruction.name} ({String.Format("{0,2:X}", opcode)})");
 
                 // Get the number of cycles required for this opcode
-                cycles = CurrentInstruction.cycles;
+                _cyclesRemaining = CurrentInstruction.cycles;
 
                 byte additionalCycle1 = CurrentInstruction.addrmode.Invoke();
                 byte additionalCycle2 = CurrentInstruction.operate.Invoke();
 
                 // Increase clock cycles only if BOTH the op and addr require it
-                cycles += (additionalCycle1 & additionalCycle2);
+                _cyclesRemaining += (additionalCycle1 & additionalCycle2);
 
             }
 
             // Everytime we call this function, 1 cycle has elapsed. 
             // remember, most instructions need 2+ cycles to complete
-            cycles--;
+            _cyclesRemaining--;
 
         }
 
-        public bool CycleComplete()
+        public bool IsCycleComplete()
         {
-            return cycles == 0;
+            return _cyclesRemaining == 0;
         }
 
         public Instruction GetInstruction(byte opCode)
         {
-            return lookup[opCode];
+            return _instructionLookupTable[opCode];
         }
         
-        public void LoadDisassembly(ushort start, ushort end)
-        {
-            Disassembly = new SortedList();
-            StringBuilder sb = new StringBuilder();
-
-            ushort addr = start;
-            byte data = 0x00;
-            byte lo = 0x00;
-            byte hi = 0x00;
-
-            while(addr < end)
-            {
-                sb.Clear();
-
-                // Prefix line with instruction address
-                sb.Append(String.Format("{0,4:X4}: ", addr));
-
-                ushort line_addr = addr;
-
-                byte cur_opcode = bus.Read(addr, true); addr++;
-                Instruction cur_instruction = GetInstruction(cur_opcode);
-                sb.Append($"{cur_instruction.name} ");
-
-                if(cur_instruction.addrmode == IMP)
-                {
-                    sb.Append("(IMP)");
-
-                } else if (cur_instruction.addrmode == IMM)
-                {
-                    sb.Append(String.Format("#${0,2:X2} (IMM)", bus.Read(addr, true))); addr++;
-
-                }
-                else if (cur_instruction.addrmode == ABS)
-                {
-                    lo = bus.Read(addr, true); addr++;
-                    hi = bus.Read(addr, true); addr++;
-                    sb.Append(String.Format("${0,2:X2}", hi));
-                    sb.Append(String.Format("{0,2:X2} (ABS)", lo));
-
-                }
-                else if (cur_instruction.addrmode == IND)
-                {
-                    lo = bus.Read(addr, true); addr++;
-                    hi = bus.Read(addr, true); addr++;
-                    sb.Append(String.Format("#${0,2:X4} (IND)", (hi << 8) | lo));
-
-                }
-                else if (cur_instruction.addrmode == REL)
-                {
-                    data = bus.Read(addr, true); addr++;
-                    sb.Append(String.Format("${0,0:X2} ", data));
-                    sb.Append(String.Format("[${0,4:X4}] (REL)", addr + data));
-
-                }
-
-                // TODO: Add remaining addr modes to disassembly (once we have a ROM loader)
-
-                // Finish up this line
-                Disassembly.Add(line_addr, sb.ToString());
-            }
-
-            DisassemblyLoaded = true;
-
-        }
-
-        public void LoadROM(String byteString)
-        {
-            DisassemblyLoaded = false;
-
-            ushort offset = 0x8000;
-
-            byte[] progArray = StringToByteArray(byteString);
-            int progSize = progArray.Length;
-            for (int i = 0; i < progSize; i++)
-            {
-                bus.Write(offset++, progArray[i]);
-
-            }
-        }
-
         public static byte[] StringToByteArray(String hex)
         {
             hex = hex.Replace(" ", "");
@@ -1723,5 +1652,71 @@ namespace NESSharp.Hardware
         }
 
         #endregion
+
+        public SortedList LoadDisassembly(ushort start, ushort end)
+        {
+            SortedList returnDisassembly = new SortedList();
+            StringBuilder sb = new StringBuilder();
+
+            ushort addr = start;
+            byte data = 0x00;
+            byte lo = 0x00;
+            byte hi = 0x00;
+
+            while (addr < end)
+            {
+                sb.Clear();
+
+                // Prefix line with instruction address
+                sb.Append(String.Format("{0,4:X4}: ", addr));
+
+                ushort line_addr = addr;
+
+                byte cur_opcode = _bus.CPURead(addr, true); addr++;
+                Instruction cur_instruction = GetInstruction(cur_opcode);
+                sb.Append($"{cur_instruction.name} ");
+
+                if (cur_instruction.addrmode == IMP)
+                {
+                    sb.Append("(IMP)");
+
+                }
+                else if (cur_instruction.addrmode == IMM)
+                {
+                    sb.Append(String.Format("#${0,2:X2} (IMM)", _bus.CPURead(addr, true))); addr++;
+
+                }
+                else if (cur_instruction.addrmode == ABS)
+                {
+                    lo = _bus.CPURead(addr, true); addr++;
+                    hi = _bus.CPURead(addr, true); addr++;
+                    sb.Append(String.Format("${0,2:X2}", hi));
+                    sb.Append(String.Format("{0,2:X2} (ABS)", lo));
+
+                }
+                else if (cur_instruction.addrmode == IND)
+                {
+                    lo = _bus.CPURead(addr, true); addr++;
+                    hi = _bus.CPURead(addr, true); addr++;
+                    sb.Append(String.Format("#${0,2:X4} (IND)", (hi << 8) | lo));
+
+                }
+                else if (cur_instruction.addrmode == REL)
+                {
+                    data = _bus.CPURead(addr, true); addr++;
+                    sb.Append(String.Format("${0,0:X2} ", data));
+                    sb.Append(String.Format("[${0,4:X4}] (REL)", addr + data));
+
+                }
+
+                // TODO: Add remaining addr modes to disassembly (once we have a ROM loader)
+
+                // Finish up this line
+                returnDisassembly.Add(line_addr, sb.ToString());
+            }
+
+            return returnDisassembly;
+
+        }
     }
 }

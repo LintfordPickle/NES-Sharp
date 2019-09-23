@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
@@ -32,22 +33,22 @@ namespace NESSharpWinForm
         #endregion
 
         #region Variables
-        private readonly DirectBitmap bitmap;
-        private readonly TimeUtil timeUtil;
-        private readonly FPSUtil fpsUtil;
-        private readonly InputUtil inputUtil;
-        private readonly Font drawFont;
-        private readonly StringBuilder sb;
-        private readonly SolidBrush drawOnBrush;
-        private readonly SolidBrush drawOffBrush;
+        private const float _InputWaitTime = 250; // ms to wait between keyboard input
+
+        private readonly NESCore _NESCore;
+
+        private readonly DirectBitmap _Bitmap;
+        private readonly TimeUtil _TimeUtil;
+        private readonly FPSUtil _FpsUtil;
+        private readonly InputUtil _InputUtil;
+        private readonly Font _DrawFont;
+        private readonly StringBuilder _StringBuilder;
+        private readonly SolidBrush _DrawOnBrush;
+        private readonly SolidBrush _DrawOffBrush;
         
-        private bool inputStepCycle;
-        private bool inputReset;
-
-        private NESCore NESCore;
-
-        private float inputTimer;
-        private float inputWaitTime = 250; // ms
+        private float _InputTimer;
+        private bool _InputStepCycle;
+        private bool _InputReset;
         #endregion
 
         #region Properties
@@ -68,37 +69,39 @@ namespace NESSharpWinForm
             // Setup the real-time renderer to run when Application_Idle is fired.
             Application.Idle += Application_Idle;
 
-            bitmap = new DirectBitmap(640, 480, PixelFormat.Format32bppArgb);
-            timeUtil = new TimeUtil();
-            fpsUtil = new FPSUtil();
-            inputUtil = new InputUtil();
+            _Bitmap = new DirectBitmap(640, 480, PixelFormat.Format32bppArgb);
+            _TimeUtil = new TimeUtil();
+            _FpsUtil = new FPSUtil();
+            _InputUtil = new InputUtil();
 
-            this.KeyDown += inputUtil.OnKeyDown;
-            this.KeyUp += inputUtil.OnKeyUp;
+            this.KeyDown += _InputUtil.OnKeyDown;
+            this.KeyUp += _InputUtil.OnKeyUp;
 
             // Assign the DirectBitmap to the pixturebox
-            pictureBox1.Image = bitmap.Bitmap;
+            pictureBox1.Image = _Bitmap.Bitmap;
 
-            drawFont = new Font("Courier New", 9);
-            sb = new StringBuilder();
+            _DrawFont = new Font("Courier New", 9);
+            _StringBuilder = new StringBuilder();
 
-            drawOnBrush = new SolidBrush(Color.Yellow);
-            drawOffBrush = new SolidBrush(Color.Gray);
+            _DrawOnBrush = new SolidBrush(Color.Yellow);
+            _DrawOffBrush = new SolidBrush(Color.Gray);
 
-            NESCore = new NESCore();
-
-            // Load a basic program and generate disassembly
-            // 3 x 10 and store result in $0002
-            String program = "A2 0A 8E 00 00 A2 03 8E 01 00 AC 00 00 A9 00 38 18 6D 01 00 88 D0 FA 8D 02 00 EA EA EA";
-            NESCore.LoadROMFromString(program, true);
-
-            // Set the reset vector
-            NESCore.Reset();
+            _NESCore = new NESCore();
 
         }
         #endregion
 
         #region Methods
+        public void LoadROM(String fileName)
+        {
+            Cartridge cart = new Cartridge(fileName);
+
+            // temp
+            _NESCore.InsertCartridge(cart);
+
+            // Set the reset vector
+            _NESCore.Reset();
+        }
         private void Application_Idle(object sender, EventArgs e)
         {
             int updateFrameLag = 0;
@@ -106,48 +109,48 @@ namespace NESSharpWinForm
             while (IsApplicationIdle())
             {
                 // TODO: encapsulate this 
-                timeUtil.AccumulatedElapsedTimeMilli += timeUtil.GetDelta();
+                _TimeUtil.AccumulatedElapsedTimeMilli += _TimeUtil.GetDelta();
 
                 // Check if enough time has passed to do another update
-                if (timeUtil.AccumulatedElapsedTimeMilli < timeUtil.TargetElapsedTimeMilli)
+                if (_TimeUtil.AccumulatedElapsedTimeMilli < _TimeUtil.TargetElapsedTimeMilli)
                 {
                     // if not enough time has elapsed to process another update, then calculate the amount of time we 
                     // would need to wait and sleep the thread.
-                    int sleepTime = (int)(timeUtil.TargetElapsedTimeMilli - timeUtil.AccumulatedElapsedTimeMilli);
+                    int sleepTime = (int)(_TimeUtil.TargetElapsedTimeMilli - _TimeUtil.AccumulatedElapsedTimeMilli);
                     
                     System.Threading.Thread.Sleep(sleepTime);
                     continue;
                 }
 
                 // Handle input
-                OnInput(inputUtil);
+                OnInput(_InputUtil);
 
                 // Do not allow any update to take longer than our maximum allowed.
-                if (timeUtil.AccumulatedElapsedTimeMilli > timeUtil.MaxElapsedTimeMilli)
-                    timeUtil.AccumulatedElapsedTimeMilli = timeUtil.MaxElapsedTimeMilli;
+                if (_TimeUtil.AccumulatedElapsedTimeMilli > _TimeUtil.MaxElapsedTimeMilli)
+                    _TimeUtil.AccumulatedElapsedTimeMilli = _TimeUtil.MaxElapsedTimeMilli;
 
-                timeUtil.ElapsedGameTimeMilli = timeUtil.TargetElapsedTimeMilli;
+                _TimeUtil.ElapsedGameTimeMilli = _TimeUtil.TargetElapsedTimeMilli;
                 int stepCount = 0;
 
                 // Update as long as the accumulated time is higher than our target fixed step
-                while (timeUtil.AccumulatedElapsedTimeMilli >= timeUtil.TargetElapsedTimeMilli)
+                while (_TimeUtil.AccumulatedElapsedTimeMilli >= _TimeUtil.TargetElapsedTimeMilli)
                 {
-                    timeUtil.TotalGameTimeMilli += timeUtil.TargetElapsedTimeMilli;
-                    timeUtil.AccumulatedElapsedTimeMilli -= timeUtil.TargetElapsedTimeMilli;
+                    _TimeUtil.TotalGameTimeMilli += _TimeUtil.TargetElapsedTimeMilli;
+                    _TimeUtil.AccumulatedElapsedTimeMilli -= _TimeUtil.TargetElapsedTimeMilli;
                     ++stepCount;
 
-                    OnUpdate(timeUtil);
+                    OnUpdate(_TimeUtil);
 
                 }
 
                 // Every update after the first accumulates lag
                 updateFrameLag += Math.Max(0, stepCount - 1);
 
-                if (timeUtil.IsGameRunningSlowly)
+                if (_TimeUtil.IsGameRunningSlowly)
                 {
                     if (updateFrameLag == 0)
                     {
-                        timeUtil.IsGameRunningSlowly = false;
+                        _TimeUtil.IsGameRunningSlowly = false;
 
                     }
 
@@ -155,22 +158,22 @@ namespace NESSharpWinForm
                 else if (updateFrameLag >= 5)
                 {
                     // If we lag more than 5 frames, log we are running slowly (to which the app can react).
-                    timeUtil.IsGameRunningSlowly = true;
+                    _TimeUtil.IsGameRunningSlowly = true;
 
                 }
 
                 // Draw needs to know the total elapsed time that occured for the fixed length updates.
-                timeUtil.ElapsedGameTimeMilli = timeUtil.TargetElapsedTimeMilli * stepCount;
+                _TimeUtil.ElapsedGameTimeMilli = _TimeUtil.TargetElapsedTimeMilli * stepCount;
               
-                fpsUtil.Update(timeUtil);
+                _FpsUtil.Update(_TimeUtil);
 
                 // Clear the screen buffer
-                bitmap.FillColor(Color.Black.ToArgb());
+                _Bitmap.FillColor(Color.Black.ToArgb());
 
-                OnRender(bitmap);
+                OnRender(_Bitmap);
 
                 // Show the FPS and update steps in the window title
-                Text = $"FPS {fpsUtil.FramesPerSecond} u({stepCount})";
+                Text = $"FPS {_FpsUtil.FramesPerSecond} u({stepCount})";
 
                 // Invalidate the picture box and force a re-render
                 pictureBox1.Invalidate();
@@ -186,20 +189,20 @@ namespace NESSharpWinForm
 
         public void OnInput(InputUtil inputUtil)
         {
-            if (inputTimer < inputWaitTime) return;
+            if (_InputTimer < _InputWaitTime) return;
 
             if (inputUtil.IsKeyPressed((byte)' '))
             {
-                inputStepCycle = true;
-                inputTimer = 0;
+                _InputStepCycle = true;
+                _InputTimer = 0;
 
             }
 
             if (inputUtil.IsKeyPressed((byte)'R'))
             {
-                inputReset = true;
-                inputStepCycle = false;
-                inputTimer = 0;
+                _InputReset = true;
+                _InputStepCycle = false;
+                _InputTimer = 0;
 
             }
 
@@ -207,25 +210,25 @@ namespace NESSharpWinForm
 
         public void OnUpdate(TimeUtil timeUtil)
         {
-            inputTimer += (float)timeUtil.ElapsedGameTimeMilli;
+            _InputTimer += (float)timeUtil.ElapsedGameTimeMilli;
 
-            if (inputReset)
+            if (_InputReset)
             {
-                inputReset = false;
-                NESCore.Reset();
+                _InputReset = false;
+                _NESCore.Reset();
             }
 
-            if (inputStepCycle)
+            if (_InputStepCycle)
             {
 
-                inputStepCycle = false;
+                _InputStepCycle = false;
 
                 // Emulate the cpu cycles until the next instruction completes
                 do
                 {
-                    NESCore.NESCPU.clock();
+                    _NESCore.StepOne();
 
-                } while (!NESCore.NESCPU.CycleComplete());
+                } while (!_NESCore.IsCycleComplete());
 
             }
         }
@@ -255,10 +258,10 @@ namespace NESSharpWinForm
                 // Draw program memory
                 DrawRAM(Column0XPos, Column1YPos, 0x8000, 16, 16, g);
 
-                if (NESCore.NESCPU.DisassemblyLoaded)
+                if (_NESCore.isROMLoaded && _NESCore.isDisassemblyLoaded)
                 {
                     // Draw disassembler, if available
-                    DrawDisassembler(Column1XPos, 167, 18, NESCore.NESCPU.pc, g);
+                    DrawDisassembler(Column1XPos, 167, 18, _NESCore.CPU().pc, g);
 
                 }
             }
@@ -270,52 +273,52 @@ namespace NESSharpWinForm
         private void DrawCPU(int x, int y, Graphics g)
         {
             // Create a font and a brush
-            bool IsBFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.B); // break
-            bool IsCFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.C); // carry flag
-            bool IsDFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.D); // decimal (mode)
-            bool IsIFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.I); // interupt
-            bool IsNFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.N); // negative
-            bool IsUFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.U); // unused
-            bool IsVFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.V); // overflow
-            bool IsZFlagSet = NESCore.NESCPU.GetFlag(CPU6502.FLAGS6502.Z); // zero
+            bool IsBFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.B); // break
+            bool IsCFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.C); // carry flag
+            bool IsDFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.D); // decimal (mode)
+            bool IsIFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.I); // interupt
+            bool IsNFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.N); // negative
+            bool IsUFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.U); // unused
+            bool IsVFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.V); // overflow
+            bool IsZFlagSet = _NESCore.CPU().GetFlag(CPU6502.FLAGS6502.Z); // zero
 
-            sb.Clear();
+            _StringBuilder.Clear();
             // Render 'off' flags
-            sb.Append("       ");
-            sb.Append(IsBFlagSet ? "  " : "B ");
-            sb.Append(IsCFlagSet ? "  " : "C ");
-            sb.Append(IsDFlagSet ? "  " : "D ");
-            sb.Append(IsIFlagSet ? "  " : "I ");
-            sb.Append(IsNFlagSet ? "  " : "N ");
-            sb.Append(IsUFlagSet ? "  " : "U ");
-            sb.Append(IsVFlagSet ? "  " : "V ");
-            sb.Append(IsZFlagSet ? "  " : "Z ");
+            _StringBuilder.Append("       ");
+            _StringBuilder.Append(IsBFlagSet ? "  " : "B ");
+            _StringBuilder.Append(IsCFlagSet ? "  " : "C ");
+            _StringBuilder.Append(IsDFlagSet ? "  " : "D ");
+            _StringBuilder.Append(IsIFlagSet ? "  " : "I ");
+            _StringBuilder.Append(IsNFlagSet ? "  " : "N ");
+            _StringBuilder.Append(IsUFlagSet ? "  " : "U ");
+            _StringBuilder.Append(IsVFlagSet ? "  " : "V ");
+            _StringBuilder.Append(IsZFlagSet ? "  " : "Z ");
 
-            g.DrawString(sb.ToString(), drawFont, drawOffBrush, new PointF(x, y));
+            g.DrawString(_StringBuilder.ToString(), _DrawFont, _DrawOffBrush, new PointF(x, y));
 
             // 
-            sb.Clear();
-            sb.Append("Flags: ");
-            sb.Append(IsBFlagSet ? "B " : "  ");
-            sb.Append(IsCFlagSet ? "C " : "  ");
-            sb.Append(IsDFlagSet ? "D " : "  ");
-            sb.Append(IsIFlagSet ? "I " : "  ");
-            sb.Append(IsNFlagSet ? "N " : "  ");
-            sb.Append(IsUFlagSet ? "U " : "  ");
-            sb.Append(IsVFlagSet ? "V " : "  ");
-            sb.Append(IsZFlagSet ? "Z " : "  ");
+            _StringBuilder.Clear();
+            _StringBuilder.Append("Flags: ");
+            _StringBuilder.Append(IsBFlagSet ? "B " : "  ");
+            _StringBuilder.Append(IsCFlagSet ? "C " : "  ");
+            _StringBuilder.Append(IsDFlagSet ? "D " : "  ");
+            _StringBuilder.Append(IsIFlagSet ? "I " : "  ");
+            _StringBuilder.Append(IsNFlagSet ? "N " : "  ");
+            _StringBuilder.Append(IsUFlagSet ? "U " : "  ");
+            _StringBuilder.Append(IsVFlagSet ? "V " : "  ");
+            _StringBuilder.Append(IsZFlagSet ? "Z " : "  ");
 
-            g.DrawString(sb.ToString(), drawFont, drawOnBrush, new PointF(x, y));
+            g.DrawString(_StringBuilder.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
 
-            sb.Clear();
-            sb.Append(" \n");
-            sb.Append("PC: "); sb.Append(String.Format("${0,2:X2} \n", NESCore.NESCPU.pc));
-            sb.Append("A:  "); sb.Append(String.Format("${0,2:X2} [{0,0:D}] \n", NESCore.NESCPU.a));
-            sb.Append("X:  "); sb.Append(String.Format("${0,2:X2} [{0,0:D}] \n", NESCore.NESCPU.x));
-            sb.Append("Y:  "); sb.Append(String.Format("${0,2:X2} [{0,0:D}] \n", NESCore.NESCPU.y));
-            sb.Append("stkp:  "); sb.Append(String.Format("${0,2:X4} \n", NESCore.NESCPU.stkp));
+            _StringBuilder.Clear();
+            _StringBuilder.Append(" \n");
+            _StringBuilder.Append("PC: "); _StringBuilder.Append(String.Format("${0,2:X2} \n", _NESCore.CPU().pc));
+            _StringBuilder.Append("A:  "); _StringBuilder.Append(String.Format("${0,2:X2} [{0,0:D}] \n", _NESCore.CPU().a));
+            _StringBuilder.Append("X:  "); _StringBuilder.Append(String.Format("${0,2:X2} [{0,0:D}] \n", _NESCore.CPU().x));
+            _StringBuilder.Append("Y:  "); _StringBuilder.Append(String.Format("${0,2:X2} [{0,0:D}] \n", _NESCore.CPU().y));
+            _StringBuilder.Append("stkp:  "); _StringBuilder.Append(String.Format("${0,2:X4} \n", _NESCore.CPU().stkp));
 
-            g.DrawString(sb.ToString(), drawFont, drawOnBrush, new PointF(x, y));
+            g.DrawString(_StringBuilder.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
         }
 
         /// <summary>
@@ -326,22 +329,22 @@ namespace NESSharpWinForm
             int PosX = x;
             int PosY = y;
 
-            sb.Clear();
+            _StringBuilder.Clear();
 
             for (int row = 0; row < rows; row++)
             {
-                sb.Append(String.Format("${0,4:X4}: ", addr));
+                _StringBuilder.Append(String.Format("${0,4:X4}: ", addr));
 
                 for (int col = 0; col < cols; col++)
                 {
-                    sb.Append(String.Format("{0,2:X2} ", NESCore.NESBus.Read(addr, true)));
+                    _StringBuilder.Append(String.Format("{0,2:X2} ", _NESCore.CPURead(addr, true)));
                     addr++;
                 }
-                sb.Append("\n");
+                _StringBuilder.Append("\n");
 
             }
 
-            g.DrawString(sb.ToString(), drawFont, drawOnBrush, new PointF(x, y));
+            g.DrawString(_StringBuilder.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
 
         }
 
@@ -352,11 +355,11 @@ namespace NESSharpWinForm
         {
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("Disassembly:");
-            IList disassemblerKeyList = NESCore.NESCPU.Disassembly.GetValueList();
+            IList disassemblerKeyList = _NESCore.disassembly.GetValueList();
 
             int surroundLineCount = 10;
 
-            int ourIndex = NESCore.NESCPU.Disassembly.IndexOfKey(addr);
+            int ourIndex = _NESCore.disassembly.IndexOfKey(addr);
             for (int i = ourIndex - surroundLineCount; i < ourIndex + surroundLineCount; i++)
             {
                 if (i < 0)
@@ -371,11 +374,8 @@ namespace NESSharpWinForm
                     sb.AppendLine("   " + disassemblerKeyList[(ushort)i].ToString());
             }
 
-            g.DrawString(sb.ToString(), drawFont, drawOnBrush, new PointF(x, y));
+            g.DrawString(sb.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
         }
-
-
-
         #endregion
     }
 }
