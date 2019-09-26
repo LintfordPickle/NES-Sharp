@@ -1,44 +1,47 @@
-﻿using System.Windows.Forms;
-
-namespace NESSharp.Input
+﻿namespace NESSharp.Input
 {
-    /// <summary>
-    /// Utility function for handling input.
-    /// </summary>
+
     public class InputUtil
     {
+        #region Constants
+        public const int D_UP = 0x00000000;
+        public const int D_RIGHT = 0x00000000;
+        public const int D_LEFT = 0x00000000;
+        public const int D_DOWN = 0x00000000;
+
+        public const int BUTTON_A = 0x00000000;
+        public const int BUTTON_B = 0x00000000;
+        public const int BUTTON_SELECT = 0x00000000;
+        public const int BUTTON_SSTART = 0x00000000;
+
+        public const int HARDWARE_POWER = 0x00000000;
+        public const int HARDWARE_RESET = 0x00000000;
+        #endregion
 
         #region Variables
-        /// <summary>
-        /// bool array of key states for ascii table
-        /// </summary>
         public bool[] inputBuffer { get; private set; }
         #endregion
 
         #region Constructor
         public InputUtil()
         {
-            inputBuffer = new bool[256];
+            inputBuffer = new bool[10];
         }
         #endregion
 
         #region Methods
-        public bool IsKeyPressed(byte asciiCode)
+        public bool GetInputState(int inputByte)
         {
-            if(asciiCode >= 0 && asciiCode <= 255)
-                return inputBuffer[asciiCode];
+            if(inputByte >= 0 && inputByte <= 10)
+                return inputBuffer[inputByte];
 
             return false;
         }
 
-        public void OnKeyDown(object sender, KeyEventArgs e)
+        public void SetInputState(int inputByte, bool isPressed)
         {
-            inputBuffer[e.KeyValue] = true;
-        }
-
-        public void OnKeyUp(object sender, KeyEventArgs e)
-        {
-            inputBuffer[e.KeyValue] = false;
+            if (inputByte >= 0 && inputByte <= 10)
+                inputBuffer[inputByte] = isPressed;
         }
         #endregion
 

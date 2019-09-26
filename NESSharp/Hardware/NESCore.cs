@@ -21,7 +21,7 @@ namespace NESSharp.Hardware
         #region Fields
         // Devices on bus
         private readonly CPU6502 _cpu;
-        private PPU2C02 _ppu;
+        private readonly PPU2C02 _ppu;
         private Cartridge _cart;
         private byte[] _cpuRam;         // 64KB
         private int _systemClockCounter;
@@ -44,6 +44,11 @@ namespace NESSharp.Hardware
         public CPU6502 CPU()
         {
             return _cpu;
+        }
+        
+        public PPU2C02 PPU()
+        {
+            return _ppu;
         }
         #endregion
 
@@ -126,40 +131,58 @@ namespace NESSharp.Hardware
 
             _ppu.ConnectCartridge(cartridge);
 
+            // Notify the bus that we can start accessing ROM for memory read/writes
+            isROMLoaded = true;
+
             if (!isDisassemblyLoaded)
                 LoadDisassembly(0x0000, 0xFFFF);
-
-            isROMLoaded = true;
 
         }
 
         public void Reset()
         {
-            // Set the reset vector to the start of program memory
-            _cpuRam[0xFFFC] = 0x00;
-            _cpuRam[0xFFFD] = 0x80;
-
             _cpu.Reset();
 
             _systemClockCounter = 0;
 
         }
 
-        /// <summary>
-        /// Increments the cycle count by 1.
-        /// n.b. this doesn't necessarily progress the opcode.
-        /// </summary>
-        public void StepOne()
+        public void clock()
         {
-            _cpu.clock();
+            _ppu.clock();
+
+            // The 6592 runs 3x slower than the ppu
+            if(_systemClockCounter % 3 == 0)
+            {
+                _cpu.clock();
+            }
+            _systemClockCounter++;
         }
 
         /// <summary>
-        /// Processes the next instruction.
+        /// Advances the emulation by  one complete instruction (note: likely multiple clock cycles)
         /// </summary>
-        public void StepInstruction()
+        public void StepCPUInstruction()
         {
-            _cpu.stepOneInstruction();
+            do { _cpu.clock(); } while ( !_cpu.IsCycleComplete() );
+            do { _cpu.clock(); } while (  _cpu.IsCycleComplete());
+
+        }
+
+        /// <summary>
+        /// Advances the emulation by one complete PPU frame 
+        /// (i.e. completely draw the next frame of the emulation, also advancing the CPU clock multiple times).
+        /// </summary>
+        public void StepPPUFrame()
+        {
+            // Clock enough times to draw a single frame
+            do { _ppu.clock(); } while ( !_ppu.frameComplete );
+
+            // Complete the current CPU instruction
+            do { _cpu.clock(); } while (!_cpu.IsCycleComplete());
+
+            // Reset the frame completion flag
+            _ppu.frameComplete = true;
         }
 
         public void LoadDisassembly(ushort start, ushort end)

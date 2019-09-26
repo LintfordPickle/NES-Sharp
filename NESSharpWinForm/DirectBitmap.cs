@@ -11,11 +11,11 @@ namespace NESSharpWinForm
     public class DirectBitmap
     {
         #region Variables
-        public Bitmap Bitmap { get; private set; }
-        public int[] Bits { get; private set; }
-        public bool Disposed { get; private set; }
-        public int Height { get; private set; }
-        public int Width { get; private set; }
+        public Bitmap bitmap { get; private set; }
+        public int[] pixels { get; private set; }
+        public bool isDisposed { get; private set; }
+        public int height { get; private set; }
+        public int width { get; private set; }
 
         protected GCHandle BitsHandle { get; private set; }
         #endregion
@@ -23,11 +23,11 @@ namespace NESSharpWinForm
         #region Constructor
         public DirectBitmap(int width, int height, PixelFormat pixelFormat)
         {
-            Width = width;
-            Height = height;
-            Bits = new Int32[width * height];
-            BitsHandle = GCHandle.Alloc(Bits, GCHandleType.Pinned);
-            Bitmap = new Bitmap(width, height, width * 4, pixelFormat, BitsHandle.AddrOfPinnedObject());
+            this.width = width;
+            this.height = height;
+            pixels = new Int32[width * height];
+            BitsHandle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            bitmap = new Bitmap(width, height, width * 4, pixelFormat, BitsHandle.AddrOfPinnedObject());
 
             // Clear the buffer to black (0xff000000)
             FillColor(Color.Black.ToArgb());
@@ -37,39 +37,41 @@ namespace NESSharpWinForm
         #region Methods
         public void SetPixel(int x, int y, Color color)
         {
-            // TODO: protect bounds
+            if (x < 0 || x >= width) return;
+            if (y < 0 || y >= height) return;
 
-            int index = x + (y * Width);
+            int index = x + (y * width);
             int col = color.ToArgb();
 
-            Bits[index] = col;
+            pixels[index] = col;
 
         }
 
         public Color GetPixel(int x, int y)
         {
-            // TODO: protect bounds
+            if (x < 0 || x >= width) return Color.Magenta;
+            if (y < 0 || y >= height) return Color.Magenta;
 
-            int index = x + (y * Width);
-            int col = Bits[index];
+            int index = x + (y * width);
+            int col = pixels[index];
 
             return Color.FromArgb(col);
         }
 
         public void FillColor(int col)
         {
-            for (int i = 0; i < Bits.Length; i++)
+            for (int i = 0; i < pixels.Length; i++)
             {
-                Bits[i] = col;
+                pixels[i] = col;
             }
         }
 
         public void Dispose()
         {
-            if (Disposed) return;
+            if (isDisposed) return;
 
-            Disposed = true;
-            Bitmap.Dispose();
+            isDisposed = true;
+            bitmap.Dispose();
             BitsHandle.Free();
         }
         #endregion

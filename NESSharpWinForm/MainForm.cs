@@ -2,14 +2,12 @@
 using System.Collections;
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
-using NESSharp;
 using NESSharp.Graphics;
 using NESSharp.Hardware;
-using NESSharp.Input;
+using NESSharpWinForm.Input;
 using NESSharp.Time;
 
 namespace NESSharpWinForm
@@ -36,6 +34,7 @@ namespace NESSharpWinForm
         private const float _InputWaitTime = 250; // ms to wait between keyboard input
 
         private readonly NESCore _NESCore;
+        private Cartridge _cartridge;
 
         private readonly DirectBitmap _Bitmap;
         private readonly TimeUtil _TimeUtil;
@@ -45,8 +44,13 @@ namespace NESSharpWinForm
         private readonly StringBuilder _StringBuilder;
         private readonly SolidBrush _DrawOnBrush;
         private readonly SolidBrush _DrawOffBrush;
-        
+
+        // If true, the Application_Idle will force more updates at the expense of the render calls
+        // to maintain a constant 'Updates Per Second'.
+        private bool _EmulationMode;
+
         private float _InputTimer;
+        private bool _InputStepFrame;
         private bool _InputStepCycle;
         private bool _InputReset;
         #endregion
@@ -69,7 +73,7 @@ namespace NESSharpWinForm
             // Setup the real-time renderer to run when Application_Idle is fired.
             Application.Idle += Application_Idle;
 
-            _Bitmap = new DirectBitmap(640, 480, PixelFormat.Format32bppArgb);
+            _Bitmap = new DirectBitmap(780, 480, PixelFormat.Format32bppArgb);
             _TimeUtil = new TimeUtil();
             _FpsUtil = new FPSUtil();
             _InputUtil = new InputUtil();
@@ -78,7 +82,7 @@ namespace NESSharpWinForm
             this.KeyUp += _InputUtil.OnKeyUp;
 
             // Assign the DirectBitmap to the pixturebox
-            pictureBox1.Image = _Bitmap.Bitmap;
+            pictureBox1.Image = _Bitmap.bitmap;
 
             _DrawFont = new Font("Courier New", 9);
             _StringBuilder = new StringBuilder();
@@ -92,91 +96,66 @@ namespace NESSharpWinForm
         #endregion
 
         #region Methods
-        public void LoadROM(String fileName)
+        public bool LoadROM(String fileName)
         {
-            Cartridge cart = new Cartridge(fileName);
+            _cartridge = new Cartridge(fileName);
+            // TODO: Check valid ROM File loaded!
 
-            // temp
-            _NESCore.InsertCartridge(cart);
+            _NESCore.InsertCartridge(_cartridge);
+
+            // Load the ASM here, so it isn't integral to the NESBus
+            // --->
 
             // Set the reset vector
             _NESCore.Reset();
+
+            return true;
         }
+
         private void Application_Idle(object sender, EventArgs e)
         {
-            int updateFrameLag = 0;
-
             while (IsApplicationIdle())
             {
-                // TODO: encapsulate this 
+                // Measure the amount of time since the last frame - we don't want to loop too quickly
                 _TimeUtil.AccumulatedElapsedTimeMilli += _TimeUtil.GetDelta();
 
                 // Check if enough time has passed to do another update
                 if (_TimeUtil.AccumulatedElapsedTimeMilli < _TimeUtil.TargetElapsedTimeMilli)
                 {
-                    // if not enough time has elapsed to process another update, then calculate the amount of time we 
-                    // would need to wait and sleep the thread.
-                    int sleepTime = (int)(_TimeUtil.TargetElapsedTimeMilli - _TimeUtil.AccumulatedElapsedTimeMilli);
-                    
-                    System.Threading.Thread.Sleep(sleepTime);
-                    continue;
+                    // ---> To sleep or simply exit?
+
+                    // int sleepTime = (int)(_TimeUtil.TargetElapsedTimeMilli - _TimeUtil.AccumulatedElapsedTimeMilli);
+                    // System.Threading.Thread.Sleep(sleepTime);
+
+                    break;
                 }
 
+                // **************
                 // Handle input
+
                 OnInput(_InputUtil);
-
-                // Do not allow any update to take longer than our maximum allowed.
-                if (_TimeUtil.AccumulatedElapsedTimeMilli > _TimeUtil.MaxElapsedTimeMilli)
-                    _TimeUtil.AccumulatedElapsedTimeMilli = _TimeUtil.MaxElapsedTimeMilli;
-
+                
                 _TimeUtil.ElapsedGameTimeMilli = _TimeUtil.TargetElapsedTimeMilli;
-                int stepCount = 0;
+                
+                _InputTimer += (float)_TimeUtil.ElapsedGameTimeMilli;
 
-                // Update as long as the accumulated time is higher than our target fixed step
-                while (_TimeUtil.AccumulatedElapsedTimeMilli >= _TimeUtil.TargetElapsedTimeMilli)
-                {
-                    _TimeUtil.TotalGameTimeMilli += _TimeUtil.TargetElapsedTimeMilli;
-                    _TimeUtil.AccumulatedElapsedTimeMilli -= _TimeUtil.TargetElapsedTimeMilli;
-                    ++stepCount;
+                // **************
+                // Handle updates
 
-                    OnUpdate(_TimeUtil);
-
-                }
-
-                // Every update after the first accumulates lag
-                updateFrameLag += Math.Max(0, stepCount - 1);
-
-                if (_TimeUtil.IsGameRunningSlowly)
-                {
-                    if (updateFrameLag == 0)
-                    {
-                        _TimeUtil.IsGameRunningSlowly = false;
-
-                    }
-
-                }
-                else if (updateFrameLag >= 5)
-                {
-                    // If we lag more than 5 frames, log we are running slowly (to which the app can react).
-                    _TimeUtil.IsGameRunningSlowly = true;
-
-                }
-
-                // Draw needs to know the total elapsed time that occured for the fixed length updates.
-                _TimeUtil.ElapsedGameTimeMilli = _TimeUtil.TargetElapsedTimeMilli * stepCount;
-              
                 _FpsUtil.Update(_TimeUtil);
 
-                // Clear the screen buffer
-                _Bitmap.FillColor(Color.Black.ToArgb());
+                OnUpdate(_TimeUtil);
+
+                // **************
+                // Handle Render
 
                 OnRender(_Bitmap);
 
-                // Show the FPS and update steps in the window title
-                Text = $"FPS {_FpsUtil.FramesPerSecond} u({stepCount})";
-
                 // Invalidate the picture box and force a re-render
                 pictureBox1.Invalidate();
+
+                // Show the FPS and update steps in the window title
+                Text = $"FPS {_FpsUtil.FramesPerSecond}  Emulation Mode: {_EmulationMode}";
 
             }
         }
@@ -191,17 +170,42 @@ namespace NESSharpWinForm
         {
             if (_InputTimer < _InputWaitTime) return;
 
+            // Toggle emulation mode on/off
             if (inputUtil.IsKeyPressed((byte)' '))
+            {
+                _EmulationMode = !_EmulationMode;
+                _InputTimer = 0;
+
+                if (_EmulationMode)
+                {
+                    _InputStepCycle = false;
+                    _InputStepFrame = false;
+                    _InputReset = false;
+                }
+            }                        
+
+            // Step one CPU instruction
+            if (!_EmulationMode && inputUtil.IsKeyPressed((byte)'C'))
             {
                 _InputStepCycle = true;
                 _InputTimer = 0;
 
             }
 
+            // Step one PPU frame
+            if (!_EmulationMode && inputUtil.IsKeyPressed((byte)'F'))
+            {
+                _InputStepFrame = true;
+                _InputTimer = 0;
+
+            }
+
+            // Reset the NES
             if (inputUtil.IsKeyPressed((byte)'R'))
             {
                 _InputReset = true;
                 _InputStepCycle = false;
+                _InputStepFrame = false;
                 _InputTimer = 0;
 
             }
@@ -218,50 +222,53 @@ namespace NESSharpWinForm
                 _NESCore.Reset();
             }
 
-            if (_InputStepCycle)
+            // update the NES
+            if (_EmulationMode)
             {
-
-                _InputStepCycle = false;
-
-                // Emulate the cpu cycles until the next instruction completes
-                do
+                do { _NESCore.clock(); } while (!_NESCore.PPU().frameComplete);
+                _NESCore.PPU().frameComplete = false;
+            }
+            else
+            {
+                if (_InputStepFrame)
                 {
-                    _NESCore.StepOne();
+                    _NESCore.StepPPUFrame();
+                    _NESCore.PPU().frameComplete = false;
+                    _InputStepFrame = false;
+                }
 
-                } while (!_NESCore.IsCycleComplete());
+                if (_InputStepCycle)
+                {
+                    _NESCore.StepCPUInstruction();
+                    _InputStepCycle = false;
 
+                }
             }
         }
 
         public void OnRender(DirectBitmap bitmap)
         {
-            // Resolution of NES: 256 x 240
-
-            // Clear the screen6
-            bitmap.FillColor(Color.Blue.ToArgb());
+            // Clear the screen
+            bitmap.FillColor(Color.DarkBlue.ToArgb());
 
             // Output debug information to screen
-            using (var g = Graphics.FromImage(bitmap.Bitmap))
+            using (var g = Graphics.FromImage(bitmap.bitmap))
             {
-                int Column0XPos = 5;
-                int Column0YPos = 5;
-
-                int Column1XPos = 425;
-                int Column1YPos = 235;
-
                 // Draw current CPU state
-                DrawCPU(Column1XPos, Column0YPos, g);
+                DrawCPU(516, 5, g);
 
                 // Draw zero page
-                DrawRAM(Column0XPos, Column0YPos, 0x0000, 16, 16, g);
+                // DrawRAM(Column0XPos, Column0YPos, 0x0000, 16, 16, g);
 
                 // Draw program memory
-                DrawRAM(Column0XPos, Column1YPos, 0x8000, 16, 16, g);
+                // DrawRAM(Column0XPos, Column1YPos, 0x8000, 16, 16, g);
+
+                DrawSprite(_NESCore.PPU().sprScreen, 0, 0, 0, 0, 256, 240, 2);
 
                 if (_NESCore.isROMLoaded && _NESCore.isDisassemblyLoaded)
                 {
                     // Draw disassembler, if available
-                    DrawDisassembler(Column1XPos, 167, 18, _NESCore.CPU().pc, g);
+                    DrawDisassembler(516, 167, 18, _NESCore.CPU().pc, g);
 
                 }
             }
@@ -347,7 +354,7 @@ namespace NESSharpWinForm
             g.DrawString(_StringBuilder.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
 
         }
-
+        
         /// <summary>
         /// Renders the current disassembler relative to the PC.
         /// </summary>
@@ -375,6 +382,34 @@ namespace NESSharpWinForm
             }
 
             g.DrawString(sb.ToString(), _DrawFont, _DrawOnBrush, new PointF(x, y));
+        }
+        
+        public void DrawSprite(Sprite spr, int dx, int dy, int sx, int sy, int sw, int sh, int scale)
+        {
+            for (int x = 0; x < sw * scale; x++)
+            {
+                for (int y = 0; y < sh * scale; y++)
+                {
+                    int srcX = x + sx;
+                    int srcY = y + sy;
+                    if (srcX < 0 || srcX >= spr.width * scale)
+                        continue;
+                    if (srcY < 0 || srcY >= spr.height * scale)
+                        continue;
+
+                    int dstX = dx + x;
+                    int dstY = dy + y;
+
+                    if (dstX < 0 || dstX > _Bitmap.width - 1)
+                        continue;
+                    if (dstY < 0 || dstY > _Bitmap.height - 1)
+                        continue;
+
+                    int srcP = spr.bitmap[srcY / scale * spr.width + srcX / scale];
+
+                    _Bitmap.SetPixel(dstX, dstY, Color.FromArgb(srcP));
+                }
+            }
         }
         #endregion
     }

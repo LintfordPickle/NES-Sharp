@@ -9,3 +9,13 @@ Reference Material/Sites:
 * NES Hardware
 
 * Software
+* TODOS
+** Fix Disassembler
+*** TODO The disassembler is being rendered with the correct addresses, but the instruction (Opcode and Operands) are showing incorrectly (BRK)
+** CPU6502.cs
+*** Finish adding all address modes to the disassembler loader
+** Sprite.cs
+*** TODO Refactor as it is a common class and not NES specific.
+*** 
+** Application Storage and Testroms
+*** Need a way to simply loading and saving test roms into the application data (currently the setup is not obvious).

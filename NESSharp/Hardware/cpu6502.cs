@@ -1583,17 +1583,6 @@ namespace NESSharp.Hardware
         }
 
         /// <summary>
-        /// Completes 1 instruction
-        /// </summary>
-        public void stepOneInstruction()
-        {
-            do
-            {
-                clock();
-            } while (!IsCycleComplete());
-        }
-
-        /// <summary>
         /// Proceeds by 1 clock cycle
         /// </summary>
         public void clock()
@@ -1610,7 +1599,7 @@ namespace NESSharp.Hardware
 
                 Instruction CurrentInstruction = _instructionLookupTable[opcode];
 
-                System.Console.WriteLine($"[{pc - 1}] : {CurrentInstruction.name} ({String.Format("{0,2:X}", opcode)})");
+                // System.Console.WriteLine($"[{pc - 1}] : {CurrentInstruction.name} ({String.Format("{0,2:X}", opcode)})");
 
                 // Get the number of cycles required for this opcode
                 _cyclesRemaining = CurrentInstruction.cycles;
@@ -1709,9 +1698,7 @@ namespace NESSharp.Hardware
 
                 }
 
-                // TODO: Add remaining addr modes to disassembly (once we have a ROM loader)
-
-                // Finish up this line
+                // Add this line to the disassembler
                 returnDisassembly.Add(line_addr, sb.ToString());
             }
 

@@ -17,7 +17,6 @@ namespace NESSharp.Time
         public double AccumulatedElapsedTimeMilli { get; set; }
         public double TargetElapsedTimeMilli { get; private set; }
         public double MaxElapsedTimeMilli { get; private set; }
-        public Boolean IsGameRunningSlowly { get; set; }
         #endregion
 
         #region Constructor

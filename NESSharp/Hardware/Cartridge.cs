@@ -96,7 +96,7 @@ namespace NESSharp.Hardware
                 _fileHeader.extTVSystem2 = reader.ReadByte();
                 _fileHeader.unused = reader.ReadBytes(5);
 
-                // Trainer information. If it is available, then we will skip it
+                // Trainer information occupies the next 512 bytes, if it is available on the ROM.
                 if((_fileHeader.mapper1 & 0x04) == 0x04)
                 {
                     reader.ReadBytes(512);
