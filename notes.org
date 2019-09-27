@@ -19,3 +19,7 @@ Reference Material/Sites:
 *** 
 ** Application Storage and Testroms
 *** Need a way to simply loading and saving test roms into the application data (currently the setup is not obvious).
+** PPU Register Enums
+*** TODO Choose better names for the enumerations - the current ones are way to obscure
+** Disassembler
+*** TODO Show Current/Total cycles per instruction

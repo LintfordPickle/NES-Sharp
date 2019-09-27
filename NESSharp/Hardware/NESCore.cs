@@ -41,6 +41,15 @@ namespace NESSharp.Hardware
             return _cpu.IsCycleComplete();
         }
 
+        /// <summary>
+        /// Returns the number of system cycles which have been run so far
+        /// </summary>
+        /// <returns></returns>
+        public int SystemClockCounter()
+        {
+            return _systemClockCounter;
+        }
+
         public CPU6502 CPU()
         {
             return _cpu;
@@ -91,7 +100,7 @@ namespace NESSharp.Hardware
             // Data targeting the PPU
             else if (addr >= 0x2000 && addr <= 0x3FFF)
             { 
-                _ppu.PPUWrite((ushort)(addr & 0x007), data);
+                _ppu.CPUWrite((ushort)(addr & 0x007), data);
             }
 
         }
@@ -118,7 +127,7 @@ namespace NESSharp.Hardware
             // Data targeting the PPU
             else if (addr >= 0x2000 && addr <= 0x3FFF)
             {
-                return _ppu.PPURead((ushort)(addr & 0x007), memReadonly);
+                return _ppu.CPURead((ushort)(addr & 0x007), memReadonly);
             }
 
             return data;
@@ -164,8 +173,8 @@ namespace NESSharp.Hardware
         /// </summary>
         public void StepCPUInstruction()
         {
-            do { _cpu.clock(); } while ( !_cpu.IsCycleComplete() );
-            do { _cpu.clock(); } while (  _cpu.IsCycleComplete());
+            do { clock(); } while ( !_cpu.IsCycleComplete() );
+            do { clock(); } while (  _cpu.IsCycleComplete());
 
         }
 
@@ -176,10 +185,10 @@ namespace NESSharp.Hardware
         public void StepPPUFrame()
         {
             // Clock enough times to draw a single frame
-            do { _ppu.clock(); } while ( !_ppu.frameComplete );
+            do { clock(); } while ( !_ppu.frameComplete );
 
             // Complete the current CPU instruction
-            do { _cpu.clock(); } while (!_cpu.IsCycleComplete());
+            do { clock(); } while (!_cpu.IsCycleComplete());
 
             // Reset the frame completion flag
             _ppu.frameComplete = true;

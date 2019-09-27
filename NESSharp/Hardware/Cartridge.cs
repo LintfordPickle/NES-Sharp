@@ -52,7 +52,7 @@ namespace NESSharp.Hardware
         #region Fields
         private NESCore _bus;
 
-        // Because we don#t know how big the PRG and CHR memory on the cartridge needs to be until we have read the file (due to the mapper
+        // Because we don't know how big the PRG and CHR memory on the cartridge needs to be until we have read the file (due to the mapper
         // and bank switching), define the PRG and CHR memory as a list of bytes.
         private byte[] _PRGMemory;
         private byte[] _CHRMemory;
@@ -86,7 +86,7 @@ namespace NESSharp.Hardware
             using (BinaryReader reader = new BinaryReader(fs))
             {
                 // Read the file header
-                _fileHeader.name = reader.ReadBytes(4);
+                _fileHeader.name = reader.ReadBytes(4);           //NES\n
                 _fileHeader.numPRGRomChunks = reader.ReadByte();
                 _fileHeader.numCHRRomChunks = reader.ReadByte();
                 _fileHeader.mapper1 = reader.ReadByte();
@@ -126,17 +126,21 @@ namespace NESSharp.Hardware
 
                 if (fileType == 1)
                 {
-                    // Read how many banks of data are in the rom for the program memory and read that into _PRGMemory
+                    // Read how many banks of data are in the ROM for the program memory and read that into _PRGMemory
                     // File Format specifies a single bank of PRG memory as 16KB / 16384 Bytes
                     _prgBanks = _fileHeader.numPRGRomChunks;
                     // _PRGMemory = new byte[_prgBanks * 16384];
                     _PRGMemory = reader.ReadBytes(_prgBanks * 16384);
 
-                    // Read how many banks of data are in the rom for the character memory and read that into _CHRMemory
+                    // Read how many banks of data are in the ROM for the character memory and read that into _CHRMemory
                     // File Format specifies a single bank of PRG memory as 8KB / 8192 Bytes
                     _chrBanks = _fileHeader.numCHRRomChunks;
-                    // _CHRMemory = new byte[_chrBanks * 8192];
-                    _CHRMemory = reader.ReadBytes(_chrBanks * 8192);
+                    if (_chrBanks == 0)
+                    {
+                        _CHRMemory = new byte[8192];
+                    }
+                    else
+                        _CHRMemory = reader.ReadBytes(_chrBanks * 8192);
 
                 }
 

@@ -73,7 +73,16 @@ namespace NESSharp.Hardware.Mappers
 
         public override bool ppuMapWrite(ushort addr, out int mappedAddr)
         {
-            // CHR ROM is read-only
+            if (addr >= 0x0000 && addr <= 0x1FFF)
+            {
+                if (_NumCHRBanks == 0)
+                {
+                    // Treat as RAM
+                    mappedAddr = addr;
+                    return true;
+                }
+            }
+
             mappedAddr = addr;
             return false;
         }

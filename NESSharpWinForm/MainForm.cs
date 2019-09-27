@@ -53,6 +53,8 @@ namespace NESSharpWinForm
         private bool _InputStepFrame;
         private bool _InputStepCycle;
         private bool _InputReset;
+        private int _selectedPalette;
+        private bool _runToNextLDA;
         #endregion
 
         #region Properties
@@ -155,7 +157,7 @@ namespace NESSharpWinForm
                 pictureBox1.Invalidate();
 
                 // Show the FPS and update steps in the window title
-                Text = $"FPS {_FpsUtil.FramesPerSecond}  Emulation Mode: {_EmulationMode}";
+                Text = $"FPS {_FpsUtil.FramesPerSecond}  Emulation Mode: {_EmulationMode} Num CPU Cycles: {_NESCore.SystemClockCounter()}";
 
             }
         }
@@ -173,15 +175,27 @@ namespace NESSharpWinForm
             // Toggle emulation mode on/off
             if (inputUtil.IsKeyPressed((byte)' '))
             {
-                _EmulationMode = !_EmulationMode;
-                _InputTimer = 0;
-
-                if (_EmulationMode)
+                // If we are currently running to the next LDA instruction, then cancel that first
+                // otherwise, toggle emulation mode on/off
+                if (_runToNextLDA)
                 {
-                    _InputStepCycle = false;
-                    _InputStepFrame = false;
-                    _InputReset = false;
+                    _runToNextLDA = false;
+                    _InputTimer = 0;
+
+                } else
+                {
+                    _EmulationMode = !_EmulationMode;
+                    _InputTimer = 0;
+
+                    if (_EmulationMode)
+                    {
+                        _InputStepCycle = false;
+                        _InputStepFrame = false;
+                        _InputReset = false;
+                    }
                 }
+
+                
             }                        
 
             // Step one CPU instruction
@@ -189,6 +203,22 @@ namespace NESSharpWinForm
             {
                 _InputStepCycle = true;
                 _InputTimer = 0;
+
+            }
+
+            // Run the ROM until the next occurance of the LDA instruction, then halt
+            if (!_EmulationMode && inputUtil.IsKeyPressed((byte)'L'))
+            {
+                _runToNextLDA = true;
+                _InputTimer = 0;
+
+            }
+
+            // Cycle through the available palettes.
+            if (inputUtil.IsKeyPressed((byte)'P'))
+            {
+                _selectedPalette++;
+                _selectedPalette &= 0x07;
 
             }
 
@@ -206,6 +236,7 @@ namespace NESSharpWinForm
                 _InputReset = true;
                 _InputStepCycle = false;
                 _InputStepFrame = false;
+                _runToNextLDA = false;
                 _InputTimer = 0;
 
             }
@@ -227,9 +258,31 @@ namespace NESSharpWinForm
             {
                 do { _NESCore.clock(); } while (!_NESCore.PPU().frameComplete);
                 _NESCore.PPU().frameComplete = false;
+
             }
             else
             {
+                if (_runToNextLDA)
+                {
+                    // Check the end condition (LDA (IMM)) reached
+                    if (_NESCore.CPU().opcode == 0xA1 ||
+                        _NESCore.CPU().opcode == 0xA5 ||
+                        _NESCore.CPU().opcode == 0xA9 ||
+                        _NESCore.CPU().opcode == 0xAD ||
+                        _NESCore.CPU().opcode == 0xB1 ||
+                        _NESCore.CPU().opcode == 0xB5 ||
+                        _NESCore.CPU().opcode == 0xB6 ||
+                        _NESCore.CPU().opcode == 0xBD )
+                    {
+                        _runToNextLDA = false;
+                    }
+
+                    // advance one complete frame
+                    _NESCore.StepCPUInstruction();
+                    _InputStepCycle = false;
+
+                }
+
                 if (_InputStepFrame)
                 {
                     _NESCore.StepPPUFrame();
@@ -265,10 +318,13 @@ namespace NESSharpWinForm
 
                 DrawSprite(_NESCore.PPU().sprScreen, 0, 0, 0, 0, 256, 240, 2);
 
+                DrawSprite(_NESCore.PPU().GetPatternTableSprite(0, (byte)_selectedPalette), 516, 348, 0, 0, 128, 128, 1);
+                DrawSprite(_NESCore.PPU().GetPatternTableSprite(0, (byte)_selectedPalette), 648, 348, 0, 0, 128, 128, 1);
+
                 if (_NESCore.isROMLoaded && _NESCore.isDisassemblyLoaded)
                 {
                     // Draw disassembler, if available
-                    DrawDisassembler(516, 167, 18, _NESCore.CPU().pc, g);
+                    DrawDisassembler(516, 95, 16, _NESCore.CPU().pc, g);
 
                 }
             }
@@ -364,10 +420,11 @@ namespace NESSharpWinForm
             sb.AppendLine("Disassembly:");
             IList disassemblerKeyList = _NESCore.disassembly.GetValueList();
 
-            int surroundLineCount = 10;
+            // numlines above and below current instruction
+            int halfLineCount = numLines / 2;
 
             int ourIndex = _NESCore.disassembly.IndexOfKey(addr);
-            for (int i = ourIndex - surroundLineCount; i < ourIndex + surroundLineCount; i++)
+            for (int i = ourIndex - halfLineCount; i < ourIndex + halfLineCount; i++)
             {
                 if (i < 0)
                 {
